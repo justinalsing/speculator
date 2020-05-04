@@ -7,21 +7,25 @@ dtype = tf.float32
 
 class Speculator(tf.keras.Model):
     """
-    SPECULATOR network
+    SPECULATOR model
     """
 
-    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, spectrum_shift=None, spectrum_shift=None, n_hidden=[50,50], restore=False, restore_filename=None):
+    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, spectrum_shift=None, spectrum_scale=None, n_hidden=[50,50], restore=False, restore_filename=None):
         
         """
         Constructor.
         :param n_parameters: number of SED model parameters (inputs to the network)
         :param n_wavelengths: number of wavelengths in the modelled SEDs
-        :param n_pcas: number of PCA components
-        :param pca_transform: the PCA basis vectors, ie., an [n_pcas x n_wavelengths] matrix
-        :param parameters_shift_scale: [parameters_shift, parameters_scale] shift and scale (vectors) for input parameters
-        :param pca_shift_scale: [pca_shift, pca_scale] shift and scale (vectors) for PCA coefficients
-        :param spectrum_shift_scale: [spectrum_shift, spectrum_scale] shift and scale (vectors) for the output spectra
+        :param pca_transform_matrix: the PCA basis vectors, ie., an [n_pcas x n_wavelengths] matrix
+        :param parameters_shift: shift for input parameters
+        :param parameters_scalet: scale for input parameters
+        :param pca_shift: shift for PCA coefficients
+        :param pca_scale: scale for PCA coefficients
+        :param spectrum_shift: shift for the output spectra
+        :param spectrum_scale: scale for the output spectra
         :param n_hiddens: list with number of hidden units for each hidden layer
+        :param restore: (bool) whether to restore an previously trained model or not
+        :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
         """
         
         # super
@@ -29,7 +33,7 @@ class Speculator(tf.keras.Model):
         
         # restore
         if restore is True:
-            self.restore_attributes(restore_filename)
+            self.restore(restore_filename)
             
         # else set variables from input parameters
         else:
@@ -86,14 +90,20 @@ class Speculator(tf.keras.Model):
         self.alphas = []
         self.betas = [] 
         for i in range(self.n_layers):
-            self.W.append(tf.Variable(tf.random.normal([self.architecture[i], self.architecture[i+1]], 0., np.sqrt(2./self.n_parameters)), name="W_" + srt(i)))
+            self.W.append(tf.Variable(tf.random.normal([self.architecture[i], self.architecture[i+1]], 0., np.sqrt(2./self.n_parameters)), name="W_" + str(i)))
             self.b.append(tf.Variable(tf.zeros([self.architecture[i+1]]), name = "b_" + str(i)))
+        for i in range(self.n_layers-1):
             self.alphas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "alphas_" + str(i)))
             self.betas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "betas_" + str(i)))
         
         # restore weights if restore = True
         if restore is True:
-            self.restore_weights(restore_filename)
+            for i in range(self.n_layers):
+                self.W[i].assign(self.W_[i])
+                self.b[i].assign(self.b_[i])
+            for i in range(self.n_layers-1):
+                self.alphas[i].assign(self.alphas_[i])
+                self.betas[i].assign(self.betas_[i])
             
     # non-linear activation function
     def activation(self, x, alpha, beta):
@@ -101,23 +111,27 @@ class Speculator(tf.keras.Model):
         return tf.multiply(tf.add(beta, tf.multiply(tf.sigmoid(tf.multiply(alpha, x)), tf.subtract(1.0, beta)) ), x)
 
     # call: forward pass through the network to predict pca coefficients
+    @tf.function
     def call(self, parameters):
         
         outputs = []
         layers = [tf.divide(tf.subtract(parameters, self.parameters_shift), self.parameters_scale)]
-        for i in range(self.n_layers):
+        for i in range(self.n_layers - 1):
             
             # linear network operation
             outputs.append(tf.add(tf.matmul(layers[-1], self.W[i]), self.b[i]))
             
             # non-linear activation function
             layers.append(self.activation(outputs[-1], self.alphas[i], self.betas[i]))
+
+        # linear output layer
+        layers.append(tf.add(tf.matmul(layers[-1], self.W[-1]), self.b[-1]))
             
         # rescale the output (predicted PCA coefficients) and return
-        return tf.add(tf.multiple(layers[-1], self.pca_scale), self.pca_shift)
+        return tf.add(tf.multiply(layers[-1], self.pca_scale), self.pca_shift)
             
     # pass inputs through the network to predict spectrum
-    def spectrum(self, parameters):
+    def log_spectrum(self, parameters):
         
         # pass through network to compute PCA coefficients
         pca_coefficients = self.call(parameters)
@@ -131,8 +145,8 @@ class Speculator(tf.keras.Model):
         # put network parameters to numpy arrays
         self.W_ = [self.W[i].numpy() for i in range(self.n_layers)]
         self.b_ = [self.b[i].numpy() for i in range(self.n_layers)]
-        self.alphas_ = [self.alphas[i].numpy() for i in range(self.n_layers)]
-        self.betas_ = [self.betas[i].numpy() for i in range(self.n_layers)]
+        self.alphas_ = [self.alphas[i].numpy() for i in range(self.n_layers-1)]
+        self.betas_ = [self.betas[i].numpy() for i in range(self.n_layers-1)]
         
         # put shift and scale parameters to numpy arrays
         self.parameters_shift_ = self.parameters_shift.numpy()
@@ -147,10 +161,7 @@ class Speculator(tf.keras.Model):
         
     # save
     def save(self, filename):
-        
-        # serialize weights to HDF5
-        self.save_weights(filename + "_weights.h5")
-        
+ 
         # attributes
         attributes = [self.W_, 
                       self.b_, 
@@ -172,29 +183,23 @@ class Speculator(tf.keras.Model):
                       self.architecture]
         
         # save attributes to file
-        f = open(filename + "_attributes.pkl", 'wb')
-        pickle.dump(attributed, f)
+        f = open(filename + ".pkl", 'wb')
+        pickle.dump(attributes, f)
         f.close()
         
     # restore attributes
-    def restore_attributes(self, filename):
+    def restore(self, filename):
         
-        # load all other attributes
-        f = open(filename + "_attributes.pkl", 'rb')
+        # load attributes
+        f = open(filename + ".pkl", 'rb')
         self.W_, self.b_, self.alphas_, self.betas_, self.parameters_shift_, \
         self.parameters_scale_, self.pca_shift_, self.pca_scale_, self.spectrum_shift_, \
         self.spectrum_scale_, self.pca_transform_matrix_, self.n_parameters, self.n_wavelengths, \
         self.wavelengths, self.n_pcas, self.n_hidden, self.n_layers, self.architecture = pickle.load(f)
         f.close()
-        
-    # restore weights
-    def restore_weights(self, filename):
-        
-        # load weights
-        self.load_weights(filename + ".h5")
     
-    # forward prediction of spectrum given input parameters
-    def emulate(self, parameters):
+    # forward prediction of spectrum given input parameters implemented in numpy
+    def log_spectrum_(self, parameters):
         
         # forward pass through the network
         act = []
@@ -212,9 +217,6 @@ class Speculator(tf.keras.Model):
 
         # rescale PCA coefficients, multiply out PCA basis -> normalized spectrum, shift and re-scale spectrum -> output spectrum
         return np.dot(layers[-1]*self.pca_scale_ + self.pca_shift_, self.pca_transform_matrix_)*self.spectrum_scale_ + self.spectrum_shift_
-
-
-
 
 class SpectrumPCA():
     """
@@ -333,6 +335,8 @@ class SpectrumPCA():
             
     # make a validation plot of the PCA given some validation data
     def validate_pca_basis(self, parameters_filename, spectrum_filename):
+
+        return True
         
         # load in the data (and select based on parameter selection if neccessary)
         
