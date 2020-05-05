@@ -218,6 +218,9 @@ class Speculator(tf.keras.Model):
         # rescale PCA coefficients, multiply out PCA basis -> normalized spectrum, shift and re-scale spectrum -> output spectrum
         return np.dot(layers[-1]*self.pca_scale_ + self.pca_shift_, self.pca_transform_matrix_)*self.spectrum_scale_ + self.spectrum_shift_
 
+
+
+
 class SpectrumPCA():
     """
     SPECULATOR PCA compression class
@@ -251,10 +254,10 @@ class SpectrumPCA():
     def compute_spectrum_parameters_shift_and_scale(self):
         
         # shift and scale
-        self.spectrum_shift = np.zeros(n_wavelengths)
-        self.spectrum_scale = np.zeros(n_wavelengths)
-        self.parameter_shift = np.zeros(n_parameters)
-        self.parameter_scale = np.zeros(n_parameters)
+        self.spectrum_shift = np.zeros(self.n_wavelengths)
+        self.spectrum_scale = np.zeros(self.n_wavelengths)
+        self.parameter_shift = np.zeros(self.n_parameters)
+        self.parameter_scale = np.zeros(self.n_parameters)
         
         # loop over training data files, accumulate means and std deviations
         for i in range(self.n_batches):
@@ -308,7 +311,7 @@ class SpectrumPCA():
         
     # transform the training data set to PCA basis
     def transform_and_stack_training_data(self, filename, retain = False):
-        
+
         # transform the spectra to PCA basis
         training_pca = np.concatenate([self.PCA.transform((np.load(self.spectrum_filenames[i]) - self.spectrum_shift)/self.spectrum_scale) for i in range(self.n_batches)])
         
@@ -334,13 +337,28 @@ class SpectrumPCA():
             self.training_parameters = training_parameters
             
     # make a validation plot of the PCA given some validation data
-    def validate_pca_basis(self, parameters_filename, spectrum_filename):
-
-        return True
+    def validate_pca_basis(self, spectrum_filename, parameter_filename=None):
         
         # load in the data (and select based on parameter selection if neccessary)
+        if self.parameter_selection is None:
+            
+            # load spectra and shift+scale
+            spectra = np.load(self.spectrum_filename)
+            normalized_spectra = (spectra - self.spectrum_shift)/self.spectrum_scale
+                
+        else:
+                
+            # select based on parameters
+            selection = self.parameter_selection(np.load(self.parameter_filename))
+                
+            # load spectra and shift+scale
+            spectra = np.load(self.spectrum_filename)[selection,:]
+            normalized_spectra = (spectra - self.spectrum_shift)/self.spectrum_scale
         
         # transform to PCA basis and back
-        
-        # make the plot
+        spectra_pca = self.PCA.transform(normalized_spectra)
+        spectra_in_basis = np.dot(spectra_pca, self.pca_transform_matrix)*self.spectrum_scale + self.spectrum_shift
+
+        # return raw spectra and spectra in basis
+        return spectra, spectra_in_basis
 
