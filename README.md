@@ -1,4 +1,4 @@
-# speculator
+# Speculator
 
 This repository contains the code for neural network emulation of stellar population synsthesis (SPS) models for galaxy spectra, associated with the paper [Alsing et. al 2019, arXiv 1911.11778](https://arxiv.org/abs/1911.11778). If you use this code, kindly cite that paper.
 
