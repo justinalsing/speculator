@@ -3,6 +3,6 @@ Neural network emulation of Stellar Population Synthesis (SPS) models for galaxy
 
 This repository contains the neural SPS emulation code associated with the paper [Alsing et. al 2019, arXiv 1911.11778](https://arxiv.org/abs/1911.11778)
 
-*Under construction: code, pre-complied emulator models, and documentation coming soon!*
+A basic demo of loading and calling a pre-trained model (Prospector-$\alpha$) can be found in `speculator_demo.ipynb`
 
-Meanwhile, if you read the paper and would like to collaborate on building an SPS emulator for a particular case/project, feel free to get in touch at justin.alsing@fysik.su.se
+We will be expanding this repository with additional models and demonstrations of how to train your own models. Meanwhile, if you require a particular model or would like to collaborate on building an SPS emulator for a particular case/project, feel free to get in touch at justin.alsing@fysik.su.se
