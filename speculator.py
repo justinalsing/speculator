@@ -203,7 +203,7 @@ class Speculator(tf.keras.Model):
         
         # forward pass through the network
         act = []
-        layers = [parameters]
+        layers = [(parameters - self.parameters_shift_)/self.parameters_scale_]
         for i in range(self.n_layers-1):
 
             # linear network operation
@@ -217,8 +217,6 @@ class Speculator(tf.keras.Model):
 
         # rescale PCA coefficients, multiply out PCA basis -> normalized spectrum, shift and re-scale spectrum -> output spectrum
         return np.dot(layers[-1]*self.pca_scale_ + self.pca_shift_, self.pca_transform_matrix_)*self.spectrum_scale_ + self.spectrum_shift_
-
-
 
 
 class SpectrumPCA():
@@ -361,4 +359,190 @@ class SpectrumPCA():
 
         # return raw spectra and spectra in basis
         return spectra, spectra_in_basis
+
+
+
+class Photulator(tf.keras.Model):
+    """
+    PHOTULATOR model
+    """
+
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], restore=False, restore_filename=None):
+        
+        """
+        Constructor.
+        :param n_parameters: number of SED model parameters (inputs to the network)
+        :param filters: list of filter names
+        :param parameters_shift: shift for input parameters
+        :param parameters_scale: scale for input parameters
+        :param magnitudes_shift: shift for the output mags
+        :param magnitudes_scale: scale for the output mags
+        :param n_hiddens: list with number of hidden units for each hidden layer
+        :param restore: (bool) whether to restore an previously trained model or not
+        :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
+        """
+        
+        # super
+        super(Photulator, self).__init__()
+        
+        # restore
+        if restore is True:
+            self.restore(restore_filename)
+            
+        # else set variables from input parameters
+        else:
+            # parameters
+            self.n_parameters = n_parameters
+            self.n_hidden = n_hidden
+            self.filters = filters
+            self.n_filters = len(filters)
+
+            # architecture
+            self.architecture = [self.n_parameters] + self.n_hidden + [self.n_filters]
+            self.n_layers = len(self.architecture) - 1
+
+            # shifts and scales...
+        
+            # input parameters shift and scale
+            self.parameters_shift_ = parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters)
+            self.parameters_scale_ = parameters_scale if parameters_scale is not None else np.ones(self.n_parameters)
+
+            # spectrum shift and scale
+            self.magnitudes_shift_ = magnitudes_shift if magnitudes_shift is not None else np.zeros(self.n_filters)
+            self.magnitudes_scale_ = magnitudes_scale if magnitudes_scale is not None else np.ones(self.n_filters)
+
+        # shifts and scales and transform matrix into tensorflow constants...
+        
+        # input parameters shift and scale
+        self.parameters_shift = tf.constant(self.parameters_shift_, dtype=dtype, name='parameters_shift')
+        self.parameters_scale = tf.constant(self.parameters_scale_, dtype=dtype, name='parameters_scale')
+        
+        # spectrum shift and scale
+        self.magnitudes_shift = tf.constant(self.magnitudes_shift_, dtype=dtype, name='magnitudes_shift')
+        self.magnitudes_scale = tf.constant(self.magnitudes_scale_, dtype=dtype, name='magnitudes_scale')
+        
+        # trainable variables...
+        
+        # weights, biases and activation function parameters for each layer of the network
+        self.W = []
+        self.b = []
+        self.alphas = []
+        self.betas = [] 
+        for i in range(self.n_layers):
+            self.W.append(tf.Variable(tf.random.normal([self.architecture[i], self.architecture[i+1]], 0., np.sqrt(2./self.n_parameters)), name="W_" + str(i)))
+            self.b.append(tf.Variable(tf.zeros([self.architecture[i+1]]), name = "b_" + str(i)))
+        for i in range(self.n_layers-1):
+            self.alphas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "alphas_" + str(i)))
+            self.betas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "betas_" + str(i)))
+        
+        # restore weights if restore = True
+        if restore is True:
+            for i in range(self.n_layers):
+                self.W[i].assign(self.W_[i])
+                self.b[i].assign(self.b_[i])
+            for i in range(self.n_layers-1):
+                self.alphas[i].assign(self.alphas_[i])
+                self.betas[i].assign(self.betas_[i])
+            
+    # non-linear activation function
+    def activation(self, x, alpha, beta):
+        
+        return tf.multiply(tf.add(beta, tf.multiply(tf.sigmoid(tf.multiply(alpha, x)), tf.subtract(1.0, beta)) ), x)
+
+    # call: forward pass through the network to predict magnitudes
+    @tf.function
+    def call(self, parameters):
+        
+        outputs = []
+        layers = [tf.divide(tf.subtract(parameters, self.parameters_shift), self.parameters_scale)]
+        for i in range(self.n_layers - 1):
+            
+            # linear network operation
+            outputs.append(tf.add(tf.matmul(layers[-1], self.W[i]), self.b[i]))
+            
+            # non-linear activation function
+            layers.append(self.activation(outputs[-1], self.alphas[i], self.betas[i]))
+
+        # linear output layer
+        layers.append(tf.add(tf.matmul(layers[-1], self.W[-1]), self.b[-1]))
+            
+        # rescale the output and return
+        return tf.add(tf.multiply(layers[-1], self.magnitudes_scale), self.magnitudes_shift)
+            
+    # pass inputs through the network to predict spectrum
+    def magnitudes(self, parameters):
+        
+        # call forward pass through network
+        return self.call(parameters)
+    
+    # save network parameters to numpy arrays
+    def update_emulator_parameters(self):
+        
+        # put network parameters to numpy arrays
+        self.W_ = [self.W[i].numpy() for i in range(self.n_layers)]
+        self.b_ = [self.b[i].numpy() for i in range(self.n_layers)]
+        self.alphas_ = [self.alphas[i].numpy() for i in range(self.n_layers-1)]
+        self.betas_ = [self.betas[i].numpy() for i in range(self.n_layers-1)]
+        
+        # put shift and scale parameters to numpy arrays
+        self.parameters_shift_ = self.parameters_shift.numpy()
+        self.parameters_scale_ = self.parameters_scale.numpy()
+        self.magnitudes_shift_ = self.magnitudes_shift.numpy()
+        self.magnitudes_scale_ = self.magnitudes_scale.numpy()
+        
+    # save
+    def save(self, filename):
+ 
+        # attributes
+        attributes = [self.W_, 
+                      self.b_, 
+                      self.alphas_, 
+                      self.betas_, 
+                      self.parameters_shift_, 
+                      self.parameters_scale_,
+                      self.magnitudes_shift_,
+                      self.magnitudes_scale_,
+                      self.n_parameters,
+                      self.n_filters,
+                      self.filters,
+                      self.n_hidden,
+                      self.n_layers,
+                      self.architecture]
+        
+        # save attributes to file
+        f = open(filename + ".pkl", 'wb')
+        pickle.dump(attributes, f)
+        f.close()
+        
+    # restore attributes
+    def restore(self, filename):
+        
+        # load attributes
+        f = open(filename + ".pkl", 'rb')
+        self.W_, self.b_, self.alphas_, self.betas_, self.parameters_shift_, \
+        self.parameters_scale_, self.magnitudes_shift_, \
+        self.magnitudes_scale_, self.n_parameters, self.n_filters, self.filters, \
+        self.n_hidden, self.n_layers, self.architecture = pickle.load(f)
+        f.close()
+    
+    # forward prediction of spectrum given input parameters implemented in numpy
+    def magnitudes_(self, parameters):
+        
+        # forward pass through the network
+        act = []
+        layers = [(parameters - self.parameters_shift_)/self.parameters_scale_]
+        for i in range(self.n_layers-1):
+
+            # linear network operation
+            act.append(np.dot(layers[-1], self.W_[i]) + self.b_[i])
+
+            # pass through activation function
+            layers.append((self.betas_[i] + (1.-self.betas_[i])*1./(1.+np.exp(-self.alphas_[i]*act[-1])))*act[-1])
+
+        # final (linear) layer -> (normalized) PCA coefficients
+        layers.append(np.dot(layers[-1], self.W_[-1]) + self.b_[-1])
+
+        # rescale and output
+        return layers[-1]*self.magnitudes_scale_ + self.magnitudes_shift_
+
 
