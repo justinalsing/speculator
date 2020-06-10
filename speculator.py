@@ -1,7 +1,6 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import tensorflow as tf
-from tqdm.auto import tqdm
+from sklearn.decomposition import IncrementalPCA
 import pickle
 dtype = tf.float32
 
@@ -254,8 +253,8 @@ class SpectrumPCA():
         # shift and scale
         self.spectrum_shift = np.zeros(self.n_wavelengths)
         self.spectrum_scale = np.zeros(self.n_wavelengths)
-        self.parameter_shift = np.zeros(self.n_parameters)
-        self.parameter_scale = np.zeros(self.n_parameters)
+        self.parameters_shift = np.zeros(self.n_parameters)
+        self.parameters_scale = np.zeros(self.n_parameters)
         
         # loop over training data files, accumulate means and std deviations
         for i in range(self.n_batches):
@@ -264,8 +263,8 @@ class SpectrumPCA():
             if self.parameter_selection is None:
                 self.spectrum_shift += np.mean(np.load(self.spectrum_filenames[i]), axis=0)/self.n_batches
                 self.spectrum_scale += np.std(np.load(self.spectrum_filenames[i]), axis=0)/self.n_batches
-                self.parameter_shift += np.mean(np.load(self.parameter_filenames[i]), axis=0)/self.n_batches
-                self.parameter_scale += np.std(np.load(self.parameter_filenames[i]), axis=0)/self.n_batches
+                self.parameters_shift += np.mean(np.load(self.parameter_filenames[i]), axis=0)/self.n_batches
+                self.parameters_scale += np.std(np.load(self.parameter_filenames[i]), axis=0)/self.n_batches
             # else make selections and accumulate
             else:
                 # import spectra and make parameter-based cut
@@ -276,8 +275,8 @@ class SpectrumPCA():
                 # update shifts and scales
                 self.spectrum_shift += np.mean(spectra[selection,:], axis=0)/self.n_batches
                 self.spectrum_scale += np.std(spectra[selection,:], axis=0)/self.n_batches
-                self.parameter_shift += np.mean(parameters[selection,:], axis=0)/self.n_batches
-                self.parameter_scale += np.std(parameters[selection,:], axis=0)/self.n_batches             
+                self.parameters_shift += np.mean(parameters[selection,:], axis=0)/self.n_batches
+                self.parameters_scale += np.std(parameters[selection,:], axis=0)/self.n_batches             
                 
     # train PCA incrementally
     def train_pca(self):
