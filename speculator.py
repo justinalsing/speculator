@@ -218,6 +218,63 @@ class Speculator(tf.keras.Model):
         return np.dot(layers[-1]*self.pca_scale_ + self.pca_shift_, self.pca_transform_matrix_)*self.spectrum_scale_ + self.spectrum_shift_
 
 
+    ### Infrastructure for network training ###
+
+    @tf.function
+    def compute_loss(self, theta, pca):
+
+        return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(theta), pca)))      
+
+    @tf.function
+    def compute_loss_and_gradients(self, theta, pca):
+
+        # compute loss on the tape
+        with tf.GradientTape() as tape:
+
+            # loss
+            loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(theta), pca)))
+
+        # compute gradients
+        gradients = tape.gradient(loss, self.trainable_variables)
+
+        return loss, gradients
+
+    def training_step(self, theta, pca):
+
+        # compute loss and gradients
+        loss, gradients = self.compute_loss_and_gradients(theta, pca)
+
+        # apply gradients
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+        return loss
+
+    def training_step_with_accumulated_gradients(self, theta, pca, accumulation_steps=10):
+
+        # create dataset to do sub-calculations over
+        dataset = tf.data.Dataset.from_tensor_slices((theta, pca)).batch(int(theta.shape[0]/accumulation_steps))
+
+        # initialize gradients and loss (to zero)
+        accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
+        accumulated_loss = tf.Variable(0., trainable=False)
+
+        # loop over sub-batches
+        for theta_, pca_ in dataset:
+        
+            # calculate loss and gradients
+            loss, gradients = self.compute_loss_and_gradients(theta_, pca_)
+
+            # update the accumulated gradients and loss
+            for i in range(len(accumulated_gradients)):
+                accumulated_gradients[i].assign_add(gradients[i]*theta_.shape[0]/theta.shape[0])
+                accumulated_loss.assign_add(loss*theta_.shape[0]/theta.shape[0])
+        
+        # apply accumulated gradients
+        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
+
+        return accumulated_loss
+
+
 class SpectrumPCA():
     """
     SPECULATOR PCA compression class
@@ -544,4 +601,58 @@ class Photulator(tf.keras.Model):
         # rescale and output
         return layers[-1]*self.magnitudes_scale_ + self.magnitudes_shift_
 
+    ### Infrastructure for network training ###
 
+    @tf.function
+    def compute_loss(self, theta, mags):
+
+        return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(theta), mags)))      
+
+    @tf.function
+    def compute_loss_and_gradients(self, theta, mags):
+
+        # compute loss on the tape
+        with tf.GradientTape() as tape:
+
+            # loss
+            loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(theta), mags)))
+
+        # compute gradients
+        gradients = tape.gradient(loss, self.trainable_variables)
+
+        return loss, gradients
+
+    def training_step(self, theta, mags):
+
+        # compute loss and gradients
+        loss, gradients = self.compute_loss_and_gradients(theta, mags)
+
+        # apply gradients
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+        return loss
+
+    def training_step_with_accumulated_gradients(self, theta, mags, accumulation_steps=10):
+
+        # create dataset to do sub-calculations over
+        dataset = tf.data.Dataset.from_tensor_slices((theta, mags)).batch(int(theta.shape[0]/accumulation_steps))
+
+        # initialize gradients and loss (to zero)
+        accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
+        accumulated_loss = tf.Variable(0., trainable=False)
+
+        # loop over sub-batches
+        for theta_, mags_ in dataset:
+        
+            # calculate loss and gradients
+            loss, gradients = self.compute_loss_and_gradients(theta_, mags_)
+
+            # update the accumulated gradients and loss
+            for i in range(len(accumulated_gradients)):
+                accumulated_gradients[i].assign_add(gradients[i]*theta_.shape[0]/theta.shape[0])
+                accumulated_loss.assign_add(loss*theta_.shape[0]/theta.shape[0])
+        
+        # apply accumulated gradients
+        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
+
+        return accumulated_loss
