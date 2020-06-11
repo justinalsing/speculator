@@ -9,7 +9,7 @@ class Speculator(tf.keras.Model):
     SPECULATOR model
     """
 
-    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, spectrum_shift=None, spectrum_scale=None, n_hidden=[50,50], restore=False, restore_filename=None):
+    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, spectrum_shift=None, spectrum_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, optimizer=tf.keras.optimizers.Adam()):
         
         """
         Constructor.
@@ -103,6 +103,8 @@ class Speculator(tf.keras.Model):
             for i in range(self.n_layers-1):
                 self.alphas[i].assign(self.alphas_[i])
                 self.betas[i].assign(self.betas_[i])
+
+        self.optimizer = optimizer
             
     # non-linear activation function
     def activation(self, x, alpha, beta):
@@ -378,12 +380,12 @@ class SpectrumPCA():
             training_parameters = training_parameters[selection,:]
             
         # shift and scale of PCA basis
-        self.pca_shift = np.mean(self.training_pca, axis=0)
-        self.pca_scale = np.std(self.training_pca, axis=0)
+        self.pca_shift = np.mean(training_pca, axis=0)
+        self.pca_scale = np.std(training_pca, axis=0)
         
         # save stacked transformed training data
         np.save(filename + '_pca.npy', training_pca)
-        np.save(parameter_filename + '_parameters.npy', training_parameters)
+        np.save(filename + '_parameters.npy', training_parameters)
         
         # retain training data as attributes if retain == True
         if retain:
@@ -397,16 +399,15 @@ class SpectrumPCA():
         if self.parameter_selection is None:
             
             # load spectra and shift+scale
-            spectra = np.load(self.spectrum_filename)
+            spectra = np.load(spectrum_filename)
             normalized_spectra = (spectra - self.spectrum_shift)/self.spectrum_scale
                 
         else:
-                
             # select based on parameters
-            selection = self.parameter_selection(np.load(self.parameter_filename))
+            selection = self.parameter_selection(np.load(parameter_filename))
                 
             # load spectra and shift+scale
-            spectra = np.load(self.spectrum_filename)[selection,:]
+            spectra = np.load(spectrum_filename)[selection,:]
             normalized_spectra = (spectra - self.spectrum_shift)/self.spectrum_scale
         
         # transform to PCA basis and back
@@ -423,7 +424,7 @@ class Photulator(tf.keras.Model):
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], restore=False, restore_filename=None):
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, optimizer=tf.keras.optimizers.Adam()):
         
         """
         Constructor.
@@ -436,6 +437,7 @@ class Photulator(tf.keras.Model):
         :param n_hiddens: list with number of hidden units for each hidden layer
         :param restore: (bool) whether to restore an previously trained model or not
         :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
+        :param optimizer: tensorflow optimizer
         """
         
         # super
@@ -499,6 +501,8 @@ class Photulator(tf.keras.Model):
             for i in range(self.n_layers-1):
                 self.alphas[i].assign(self.alphas_[i])
                 self.betas[i].assign(self.betas_[i])
+
+        self.optimizer = optimizer
             
     # non-linear activation function
     def activation(self, x, alpha, beta):
