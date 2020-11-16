@@ -13,7 +13,7 @@ class Speculator(tf.keras.Model):
     SPECULATOR model
     """
 
-    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, spectrum_shift=None, spectrum_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, trainable=True):
+    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, log_spectrum_shift=None, log_spectrum_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, trainable=True, optimizer=tf.keras.optimizers.Adam()):
         
         """
         Constructor.
@@ -24,8 +24,8 @@ class Speculator(tf.keras.Model):
         :param parameters_scalet: scale for input parameters
         :param pca_shift: shift for PCA coefficients
         :param pca_scale: scale for PCA coefficients
-        :param spectrum_shift: shift for the output spectra
-        :param spectrum_scale: scale for the output spectra
+        :param log_spectrum_shift: shift for the output spectra
+        :param log_spectrum_scale: scale for the output spectra
         :param n_hiddens: list with number of hidden units for each hidden layer
         :param restore: (bool) whether to restore an previously trained model or not
         :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
@@ -65,8 +65,8 @@ class Speculator(tf.keras.Model):
             self.pca_scale_ = pca_scale if pca_scale is not None else np.ones(self.n_pcas)
 
             # spectrum shift and scale
-            self.spectrum_shift_ = spectrum_shift if spectrum_shift is not None else np.zeros(self.n_wavelengths)
-            self.spectrum_scale_ = spectrum_scale if spectrum_scale is not None else np.ones(self.n_wavelengths)
+            self.log_spectrum_shift_ = log_spectrum_shift if log_spectrum_shift is not None else np.zeros(self.n_wavelengths)
+            self.log_spectrum_scale_ = log_spectrum_scale if log_spectrum_scale is not None else np.ones(self.n_wavelengths)
 
         # shifts and scales and transform matrix into tensorflow constants...
         
@@ -79,8 +79,8 @@ class Speculator(tf.keras.Model):
         self.pca_scale = tf.constant(self.pca_scale_, dtype=dtype, name='pca_scale')
         
         # spectrum shift and scale
-        self.spectrum_shift = tf.constant(self.spectrum_shift_, dtype=dtype, name='spectrum_shift')
-        self.spectrum_scale = tf.constant(self.spectrum_scale_, dtype=dtype, name='spectrum_scale')
+        self.log_spectrum_shift = tf.constant(self.log_spectrum_shift_, dtype=dtype, name='log_spectrum_shift')
+        self.log_spectrum_scale = tf.constant(self.log_spectrum_scale_, dtype=dtype, name='log_spectrum_scale')
         
         # pca transform matrix
         self.pca_transform_matrix = tf.constant(self.pca_transform_matrix_, dtype=dtype, name='pca_transform_matrix')
@@ -107,6 +107,8 @@ class Speculator(tf.keras.Model):
             for i in range(self.n_layers-1):
                 self.alphas[i].assign(self.alphas_[i])
                 self.betas[i].assign(self.betas_[i])
+
+        self.optimizer = optimizer
             
     # non-linear activation function
     def activation(self, x, alpha, beta):
@@ -134,13 +136,14 @@ class Speculator(tf.keras.Model):
         return tf.add(tf.multiply(layers[-1], self.pca_scale), self.pca_shift)
             
     # pass inputs through the network to predict spectrum
+    @tf.function
     def log_spectrum(self, parameters):
         
         # pass through network to compute PCA coefficients
         pca_coefficients = self.call(parameters)
         
         # transform from PCA to normalized spectrum basis; shift and re-scale normalized spectrum -> spectrum
-        return tf.add(tf.multiply(tf.matmul(pca_coefficients, self.pca_transform_matrix), self.spectrum_scale), self.spectrum_shift)
+        return tf.add(tf.multiply(tf.matmul(pca_coefficients, self.pca_transform_matrix), self.log_spectrum_scale), self.log_spectrum_shift)
     
     # save network parameters to numpy arrays
     def update_emulator_parameters(self):
@@ -156,8 +159,8 @@ class Speculator(tf.keras.Model):
         self.parameters_scale_ = self.parameters_scale.numpy()
         self.pca_shift_ = self.pca_shift.numpy()
         self.pca_scale_ = self.pca_scale.numpy()
-        self.spectrum_shift_ = self.spectrum_shift.numpy()
-        self.spectrum_scale_ = self.spectrum_scale.numpy()
+        self.log_spectrum_shift_ = self.log_spectrum_shift.numpy()
+        self.log_spectrum_scale_ = self.log_spectrum_scale.numpy()
         
         # pca transform matrix
         self.pca_transform_matrix_ = self.pca_transform_matrix.numpy()
@@ -174,8 +177,8 @@ class Speculator(tf.keras.Model):
                       self.parameters_scale_,
                       self.pca_shift_,
                       self.pca_scale_,
-                      self.spectrum_shift_,
-                      self.spectrum_scale_,
+                      self.log_spectrum_shift_,
+                      self.log_spectrum_scale_,
                       self.pca_transform_matrix_,
                       self.n_parameters,
                       self.n_wavelengths,
@@ -196,8 +199,8 @@ class Speculator(tf.keras.Model):
         # load attributes
         f = open(filename + ".pkl", 'rb')
         self.W_, self.b_, self.alphas_, self.betas_, self.parameters_shift_, \
-        self.parameters_scale_, self.pca_shift_, self.pca_scale_, self.spectrum_shift_, \
-        self.spectrum_scale_, self.pca_transform_matrix_, self.n_parameters, self.n_wavelengths, \
+        self.parameters_scale_, self.pca_shift_, self.pca_scale_, self.log_spectrum_shift_, \
+        self.log_spectrum_scale_, self.pca_transform_matrix_, self.n_parameters, self.n_wavelengths, \
         self.wavelengths, self.n_pcas, self.n_hidden, self.n_layers, self.architecture = pickle.load(f)
         f.close()
     
@@ -219,7 +222,117 @@ class Speculator(tf.keras.Model):
         layers.append(np.dot(layers[-1], self.W_[-1]) + self.b_[-1])
 
         # rescale PCA coefficients, multiply out PCA basis -> normalized spectrum, shift and re-scale spectrum -> output spectrum
-        return np.dot(layers[-1]*self.pca_scale_ + self.pca_shift_, self.pca_transform_matrix_)*self.spectrum_scale_ + self.spectrum_shift_
+        return np.dot(layers[-1]*self.pca_scale_ + self.pca_shift_, self.pca_transform_matrix_)*self.log_spectrum_scale_ + self.log_spectrum_shift_
+
+    ### Infrastructure for network training ###
+
+    @tf.function
+    def compute_loss_spectra(self, spectra, parameters, noise_floor):
+
+      return tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(tf.exp(self.log_spectrum(parameters)), spectra), tf.square(noise_floor))))      
+
+    @tf.function
+    def compute_loss_and_gradients_spectra(self, spectra, parameters, noise_floor):
+
+      # compute loss on the tape
+      with tf.GradientTape() as tape:
+
+        # loss
+        loss = tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(tf.exp(self.log_spectrum(parameters)), spectra), tf.square(noise_floor)))) 
+
+      # compute gradients
+      gradients = tape.gradient(loss, self.trainable_variables)
+
+      return loss, gradients
+
+    def training_step_spectra(self, spectra, parameters, noise_floor):
+
+      # compute loss and gradients
+      loss, gradients = self.compute_loss_and_gradients_spectra(spectra, parameters, noise_floor)
+
+      # apply gradients
+      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+      return loss
+
+    def training_step_with_accumulated_gradients_spectra(self, spectra, parameters, noise_floor, accumulation_steps=10):
+
+      # create dataset to do sub-calculations over
+      dataset = tf.data.Dataset.from_tensor_slices((spectra, parameters, noise_floor)).batch(int(spectra.shape[0]/accumulation_steps))
+
+      # initialize gradients and loss (to zero)
+      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
+      accumulated_loss = tf.Variable(0., trainable=False)
+
+      # loop over sub-batches
+      for spectra_, parameters_, noise_floor_ in dataset:
+        
+        # calculate loss and gradients
+        loss, gradients = self.compute_loss_and_gradients_spectra(spectra_, parameters_, noise_floor_)
+
+        # update the accumulated gradients and loss
+        for i in range(len(accumulated_gradients)):
+          accumulated_gradients[i].assign_add(gradients[i]*spectra_.shape[0]/spectra.shape[0])
+        accumulated_loss.assign_add(loss*spectra_.shape[0]/spectra.shape[0])
+        
+        # apply accumulated gradients
+        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
+
+      return accumulated_loss
+
+    @tf.function
+    def compute_loss_pca(self, pca, parameters):
+
+      return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(parameters), pca)))      
+
+    @tf.function
+    def compute_loss_and_gradients_pca(self, pca, parameters):
+
+      # compute loss on the tape
+      with tf.GradientTape() as tape:
+
+        # loss
+        loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(parameters), pca))) 
+
+      # compute gradients
+      gradients = tape.gradient(loss, self.trainable_variables)
+
+      return loss, gradients
+
+    def training_step_pca(self, pca, parameters):
+
+      # compute loss and gradients
+      loss, gradients = self.compute_loss_and_gradients_spectra(pca, parameters)
+
+      # apply gradients
+      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+      return loss
+
+    def training_step_with_accumulated_gradients_pca(self, pca, parameters, accumulation_steps=10):
+
+      # create dataset to do sub-calculations over
+      dataset = tf.data.Dataset.from_tensor_slices((pca, parameters, noise_floor)).batch(int(pca.shape[0]/accumulation_steps))
+
+      # initialize gradients and loss (to zero)
+      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
+      accumulated_loss = tf.Variable(0., trainable=False)
+
+      # loop over sub-batches
+      for pca_, parameters_ in dataset:
+        
+        # calculate loss and gradients
+        loss, gradients = self.compute_loss_and_gradients_pca(pca_, parameters_)
+
+        # update the accumulated gradients and loss
+        for i in range(len(accumulated_gradients)):
+          accumulated_gradients[i].assign_add(gradients[i]*pca_.shape[0]/pca.shape[0])
+        accumulated_loss.assign_add(loss*pca_.shape[0]/pca.shape[0])
+        
+        # apply accumulated gradients
+        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
+
+      return accumulated_loss
 
 
 class SpectrumPCA():
@@ -227,13 +340,13 @@ class SpectrumPCA():
     SPECULATOR PCA compression class
     """
     
-    def __init__(self, n_parameters, n_wavelengths, n_pcas, spectrum_filenames, parameter_filenames, parameter_selection = None):
+    def __init__(self, n_parameters, n_wavelengths, n_pcas, log_spectrum_filenames, parameter_filenames, parameter_selection = None):
         """
         Constructor.
         :param n_parameters: number of SED model parameters (inputs to the network)
         :param n_wavelengths: number of wavelengths in the modelled SEDs
         :param n_pcas: number of PCA components
-        :param spectrum_filenames: list of .npy filenames for spectra (each one an [n_samples, n_wavelengths] array)
+        :param log_spectrum_filenames: list of .npy filenames for log spectra (each one an [n_samples, n_wavelengths] array)
         :param parameter_filenames: list of .npy filenames for parameters (each one an [n_samples, n_parameters] array)
         """
         
@@ -241,7 +354,7 @@ class SpectrumPCA():
         self.n_parameters = n_parameters
         self.n_wavelengths = n_wavelengths
         self.n_pcas = n_pcas
-        self.spectrum_filenames = spectrum_filenames
+        self.log_spectrum_filenames = log_spectrum_filenames
         self.parameter_filenames = parameter_filenames
         self.n_batches = len(self.parameter_filenames)
 
@@ -255,8 +368,8 @@ class SpectrumPCA():
     def compute_spectrum_parameters_shift_and_scale(self):
         
         # shift and scale
-        self.spectrum_shift = np.zeros(self.n_wavelengths)
-        self.spectrum_scale = np.zeros(self.n_wavelengths)
+        self.log_spectrum_shift = np.zeros(self.n_wavelengths)
+        self.log_spectrum_scale = np.zeros(self.n_wavelengths)
         self.parameter_shift = np.zeros(self.n_parameters)
         self.parameter_scale = np.zeros(self.n_parameters)
         
@@ -265,20 +378,20 @@ class SpectrumPCA():
             
             # accumulate assuming no parameter selection
             if self.parameter_selection is None:
-                self.spectrum_shift += np.mean(np.load(self.spectrum_filenames[i]), axis=0)/self.n_batches
-                self.spectrum_scale += np.std(np.load(self.spectrum_filenames[i]), axis=0)/self.n_batches
+                self.log_spectrum_shift += np.mean(np.load(self.log_spectrum_filenames[i]), axis=0)/self.n_batches
+                self.log_spectrum_scale += np.std(np.load(self.log_spectrum_filenames[i]), axis=0)/self.n_batches
                 self.parameter_shift += np.mean(np.load(self.parameter_filenames[i]), axis=0)/self.n_batches
                 self.parameter_scale += np.std(np.load(self.parameter_filenames[i]), axis=0)/self.n_batches
             # else make selections and accumulate
             else:
                 # import spectra and make parameter-based cut
-                spectra = np.load(self.spectrum_filenames[i])
+                log_spectra = np.load(self.log_spectrum_filenames[i])
                 parameters = np.load(self.parameter_filenames[i])
                 selection = self.parameter_selection(parameters)
                 
                 # update shifts and scales
-                self.spectrum_shift += np.mean(spectra[selection,:], axis=0)/self.n_batches
-                self.spectrum_scale += np.std(spectra[selection,:], axis=0)/self.n_batches
+                self.log_spectrum_shift += np.mean(log_spectra[selection,:], axis=0)/self.n_batches
+                self.log_spectrum_scale += np.std(log_spectra[selection,:], axis=0)/self.n_batches
                 self.parameter_shift += np.mean(parameters[selection,:], axis=0)/self.n_batches
                 self.parameter_scale += np.std(parameters[selection,:], axis=0)/self.n_batches             
                 
@@ -291,10 +404,10 @@ class SpectrumPCA():
             if self.parameter_selection is None:
             
                 # load spectra and shift+scale
-                normalized_spectra = (np.load(self.spectrum_filenames[i]) - self.spectrum_shift)/self.spectrum_scale
+                normalized_log_spectra = (np.load(self.log_spectrum_filenames[i]) - self.log_spectrum_shift)/self.log_spectrum_scale
 
                 # partial PCA fit
-                self.PCA.partial_fit(normalized_spectra)
+                self.PCA.partial_fit(normalized_log_spectra)
                 
             else:
                 
@@ -302,10 +415,10 @@ class SpectrumPCA():
                 selection = self.parameter_selection(np.load(self.parameter_filenames[i]))
                 
                 # load spectra and shift+scale
-                normalized_spectra = (np.load(self.spectrum_filenames[i])[selection,:] - self.spectrum_shift)/self.spectrum_scale
+                normalized_log_spectra = (np.load(self.log_spectrum_filenames[i])[selection,:] - self.log_spectrum_shift)/self.log_spectrum_scale
 
                 # partial PCA fit
-                self.PCA.partial_fit(normalized_spectra)
+                self.PCA.partial_fit(normalized_log_spectra)
             
         # set the PCA transform matrix
         self.pca_transform_matrix = self.PCA.components_
@@ -314,7 +427,7 @@ class SpectrumPCA():
     def transform_and_stack_training_data(self, filename, retain = False):
 
         # transform the spectra to PCA basis
-        training_pca = np.concatenate([self.PCA.transform((np.load(self.spectrum_filenames[i]) - self.spectrum_shift)/self.spectrum_scale) for i in range(self.n_batches)])
+        training_pca = np.concatenate([self.PCA.transform((np.load(self.log_spectrum_filenames[i]) - self.log_spectrum_shift)/self.log_spectrum_scale) for i in range(self.n_batches)])
         
         # stack the input parameters
         training_parameters = np.concatenate([np.load(self.parameter_filenames[i]) for i in range(self.n_batches)])
@@ -338,14 +451,14 @@ class SpectrumPCA():
             self.training_parameters = training_parameters
             
     # make a validation plot of the PCA given some validation data
-    def validate_pca_basis(self, spectrum_filename, parameter_filename=None):
+    def validate_pca_basis(self, log_spectrum_filename, parameter_filename=None):
         
         # load in the data (and select based on parameter selection if neccessary)
         if self.parameter_selection is None:
             
             # load spectra and shift+scale
-            spectra = np.load(self.spectrum_filename)
-            normalized_spectra = (spectra - self.spectrum_shift)/self.spectrum_scale
+            log_spectra = np.load(log_spectrum_filename)
+            normalized_log_spectra = (log_spectra - self.log_spectrum_shift)/self.log_spectrum_scale
                 
         else:
                 
@@ -353,16 +466,15 @@ class SpectrumPCA():
             selection = self.parameter_selection(np.load(self.parameter_filename))
                 
             # load spectra and shift+scale
-            spectra = np.load(self.spectrum_filename)[selection,:]
-            normalized_spectra = (spectra - self.spectrum_shift)/self.spectrum_scale
+            log_spectra = np.load(log_spectrum_filename)[selection,:]
+            normalized_log_spectra = (log_spectra - self.log_spectrum_shift)/self.log_spectrum_scale
         
         # transform to PCA basis and back
-        spectra_pca = self.PCA.transform(normalized_spectra)
-        spectra_in_basis = np.dot(spectra_pca, self.pca_transform_matrix)*self.spectrum_scale + self.spectrum_shift
+        log_spectra_pca = self.PCA.transform(normalized_log_spectra)
+        log_spectra_in_basis = np.dot(log_spectra_pca, self.pca_transform_matrix)*self.log_spectrum_scale + self.log_spectrum_shift
 
         # return raw spectra and spectra in basis
-        return spectra, spectra_in_basis
-
+        return log_spectra, log_spectra_in_basis
 
 
 class Photulator(tf.keras.Model):
@@ -370,7 +482,7 @@ class Photulator(tf.keras.Model):
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, trainable=True):
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, trainable=True, optimizer=tf.keras.optimizers.Adam()):
         
         """
         Constructor.
@@ -446,6 +558,8 @@ class Photulator(tf.keras.Model):
             for i in range(self.n_layers-1):
                 self.alphas[i].assign(self.alphas_[i])
                 self.betas[i].assign(self.betas_[i])
+
+        self.optimizer = optimizer
             
     # non-linear activation function
     def activation(self, x, alpha, beta):
@@ -473,6 +587,7 @@ class Photulator(tf.keras.Model):
         return tf.add(tf.multiply(layers[-1], self.magnitudes_scale), self.magnitudes_shift)
             
     # pass inputs through the network to predict spectrum
+    @tf.function
     def magnitudes(self, parameters):
         
         # call forward pass through network
@@ -547,6 +662,62 @@ class Photulator(tf.keras.Model):
 
         # rescale and output
         return layers[-1]*self.magnitudes_scale_ + self.magnitudes_shift_
+
+    ### Infrastructure for network training ###
+
+    @tf.function
+    def compute_loss(self, theta, mags):
+
+        return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(theta), mags)))      
+
+    @tf.function
+    def compute_loss_and_gradients(self, theta, mags):
+
+        # compute loss on the tape
+        with tf.GradientTape() as tape:
+
+            # loss
+            loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(theta), mags)))
+
+        # compute gradients
+        gradients = tape.gradient(loss, self.trainable_variables)
+
+        return loss, gradients
+
+    def training_step(self, theta, mags):
+
+        # compute loss and gradients
+        loss, gradients = self.compute_loss_and_gradients(theta, mags)
+
+        # apply gradients
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+        return loss
+
+    def training_step_with_accumulated_gradients(self, theta, mags, accumulation_steps=10):
+
+        # create dataset to do sub-calculations over
+        dataset = tf.data.Dataset.from_tensor_slices((theta, mags)).batch(int(theta.shape[0]/accumulation_steps))
+
+        # initialize gradients and loss (to zero)
+        accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
+        accumulated_loss = tf.Variable(0., trainable=False)
+
+        # loop over sub-batches
+        for theta_, mags_ in dataset:
+        
+            # calculate loss and gradients
+            loss, gradients = self.compute_loss_and_gradients(theta_, mags_)
+
+            # update the accumulated gradients and loss
+            for i in range(len(accumulated_gradients)):
+                accumulated_gradients[i].assign_add(gradients[i]*theta_.shape[0]/theta.shape[0])
+            accumulated_loss.assign_add(loss*theta_.shape[0]/theta.shape[0])
+        
+        # apply accumulated gradients
+        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
+
+        return accumulated_loss
 
 
 class ParameterEstimator(tf.keras.Model):
