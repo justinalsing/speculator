@@ -334,6 +334,60 @@ class Speculator(tf.keras.Model):
 
       return accumulated_loss
 
+    @tf.function
+    def compute_loss_log_spectra(self, log_spectra, parameters):
+
+      return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra)))      
+
+    @tf.function
+    def compute_loss_and_gradients_log_spectra(self, log_spectra, parameters):
+
+      # compute loss on the tape
+      with tf.GradientTape() as tape:
+
+        # loss
+        loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra))) 
+
+      # compute gradients
+      gradients = tape.gradient(loss, self.trainable_variables)
+
+      return loss, gradients
+
+    def training_step_log_spectra(self, log_spectra, parameters):
+
+      # compute loss and gradients
+      loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra, parameters)
+
+      # apply gradients
+      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
+      return loss
+
+    def training_step_with_accumulated_gradients_log_spectra(self, log_spectra, parameters, accumulation_steps=10):
+
+      # create dataset to do sub-calculations over
+      dataset = tf.data.Dataset.from_tensor_slices((log_spectra, parameters)).batch(int(log_spectra.shape[0]/accumulation_steps))
+
+      # initialize gradients and loss (to zero)
+      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
+      accumulated_loss = tf.Variable(0., trainable=False)
+
+      # loop over sub-batches
+      for log_spectra_, parameters_ in dataset:
+        
+        # calculate loss and gradients
+        loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra_, parameters_)
+
+        # update the accumulated gradients and loss
+        for i in range(len(accumulated_gradients)):
+          accumulated_gradients[i].assign_add(gradients[i]*log_spectra_.shape[0]/log_spectra.shape[0])
+        accumulated_loss.assign_add(loss*log_spectra_.shape[0]/log_spectra.shape[0])
+        
+        # apply accumulated gradients
+        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
+
+      return accumulated_loss
+
 
 class SpectrumPCA():
     """
