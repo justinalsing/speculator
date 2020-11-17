@@ -4,6 +4,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tqdm.auto import tqdm
 import pickle
+from sklearn.decomposition import IncrementalPCA
 
 dtype = tf.float32
 tfb = tfp.bijectors
