@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 import sys
 
 setup(name='speculator',
-      version='v0.1',
+      version='v0.2',
       description='SPS emulation',
       author='Justin Alsing',
       url='https://github.com/justinalsing/speculator',
