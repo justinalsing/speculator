@@ -313,7 +313,7 @@ class Speculator(tf.keras.Model):
     def training_step_with_accumulated_gradients_pca(self, pca, parameters, accumulation_steps=10):
 
       # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((pca, parameters, noise_floor)).batch(int(pca.shape[0]/accumulation_steps))
+      dataset = tf.data.Dataset.from_tensor_slices((pca, parameters)).batch(int(pca.shape[0]/accumulation_steps))
 
       # initialize gradients and loss (to zero)
       accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
