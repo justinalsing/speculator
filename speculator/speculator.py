@@ -303,7 +303,7 @@ class Speculator(tf.keras.Model):
     def training_step_pca(self, pca, parameters):
 
       # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients_spectra(pca, parameters)
+      loss, gradients = self.compute_loss_and_gradients_pca(pca, parameters)
 
       # apply gradients
       self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
