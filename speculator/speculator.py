@@ -493,8 +493,8 @@ class SpectrumPCA():
             training_parameters = training_parameters[selection,:]
             
         # shift and scale of PCA basis
-        self.pca_shift = np.mean(self.training_pca, axis=0)
-        self.pca_scale = np.std(self.training_pca, axis=0)
+        self.pca_shift = np.mean(training_pca, axis=0)
+        self.pca_scale = np.std(training_pca, axis=0)
         
         # save stacked transformed training data
         np.save(filename + '_pca.npy', training_pca)
