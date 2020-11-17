@@ -498,7 +498,7 @@ class SpectrumPCA():
         
         # save stacked transformed training data
         np.save(filename + '_pca.npy', training_pca)
-        np.save(parameter_filename + '_parameters.npy', training_parameters)
+        np.save(filename + '_parameters.npy', training_parameters)
         
         # retain training data as attributes if retain == True
         if retain:
