@@ -2,7 +2,9 @@
 
 This repository contains the code for neural network emulation of stellar population synsthesis (SPS) models for galaxy spectra, associated with the paper [Alsing et. al 2019, arXiv 1911.11778](https://arxiv.org/abs/1911.11778). If you use this code, kindly cite that paper.
 
-### dependencies
+### install and dependencies
+
+You can install the code with pip: `pip install git+https://github.com/justinalsing/speculator.git`
 
 The code is in python3 and has the following dependencies:<br>
 [tensorflow](https://www.tensorflow.org) (>2.0) <br> 
@@ -11,7 +13,7 @@ The code is in python3 and has the following dependencies:<br>
 
 ### demo
 
-A basic demo of loading and calling a pre-trained model (Prospector-alpha) can be found in `speculator_demo.ipynb`
+A basic demo of loading and calling a pre-trained model (Prospector-alpha) can be found in `examples/speculator_demo.ipynb`. For training your own model, you can use the template given in `examples/speculator_training_demo.ipynb`.
 
 ### updates and collaboration
 
