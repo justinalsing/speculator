@@ -880,7 +880,7 @@ class SpeculatorLogAutoencoder(tf.keras.Model):
       layers.append(tf.add(tf.matmul(layers[-1], self.W[-1]), self.b[-1]))
           
       # rescale -> output log spectra
-      return tf.add(tf.multiply(layers[-1]), self.log_spectrum_scale), self.log_spectrum_shift)
+      return tf.add(tf.multiply(layers[-1], self.log_spectrum_scale), self.log_spectrum_shift)
 
     # spectrum
     @tf.function
