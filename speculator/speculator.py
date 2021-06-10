@@ -1520,3 +1520,24 @@ class SpeculatorLogLinearAutoencoder(tf.keras.Model):
         self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables_))
 
       return accumulated_loss
+
+
+class PhotulatorModelStack:
+
+    def __init__(self, root_dir, filenames):
+
+        # load emulator models
+        self.emulators = [Photulator(restore=True, restore_filename=root_dir+filename, trainable=False) for filename in filenames]
+
+        # log10 constant
+        self.ln10 = tf.constant(np.log(10.), dtype=tf.float32)
+        
+    # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
+    def fluxes(self, theta, N):
+
+        return tf.concat([tf.exp( tf.multiply(tf.add(tf.multiply(-0.4, tf.add(self.emulators[i](theta), tf.expand_dims(N, -1))), 9.), self.ln10) ) for i in range(self.n_emulators)], axis=-1)
+
+    # compute magnitudes given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
+    def magnitudes(self, theta, N):
+
+        return tf.concat([tf.add(self.emulators[i](theta), tf.expand_dims(N, -1)) for i in range(self.n_emulators)], axis=-1)
