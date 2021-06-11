@@ -1542,8 +1542,10 @@ class PhotulatorModelStack:
 
         return tf.concat([tf.add(self.emulators[i](theta), tf.expand_dims(N, -1)) for i in range(self.n_emulators)], axis=-1)
 
+
+
 # train photulator model stack
-def train_photulator_stack(training_theta, training_mags, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], gradient_accumulation_steps=[1, 1, 1, 10], epochs=1000, patience=20, root_dir='', verbose=True)
+def train_photulator_stack(training_theta, training_mags, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], gradient_accumulation_steps=[1, 1, 1, 10], epochs=1000, patience=20, root_dir='', verbose=True):
 
     # architecture
     n_hidden = [n_units]*n_layers
