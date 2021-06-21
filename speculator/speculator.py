@@ -1531,6 +1531,9 @@ class PhotulatorModelStack:
 
         # log10 constant
         self.ln10 = tf.constant(np.log(10.), dtype=tf.float32)
+
+        # how many emulators?
+        self.n_emulators = len(filenames)
         
     # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def fluxes(self, theta, N):
