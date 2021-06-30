@@ -1566,7 +1566,7 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                            parameters_scale=parameters_scale, 
                            magnitudes_shift=magnitudes_shift[f], 
                            magnitudes_scale=magnitudes_scale[f], 
-                           n_hidden=[128, 128, 128, 128], 
+                           n_hidden=n_hidden, 
                            restore=False, 
                            restore_filename=None,
                            optimizer=tf.keras.optimizers.Adam())
