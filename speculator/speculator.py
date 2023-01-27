@@ -1,390 +1,11 @@
 import numpy as np
-import tensorflow as tf
+import torch
 import pickle
 from sklearn.decomposition import IncrementalPCA
+from torch.utils.data import TensorDataset, Dataset
+from torch.utils.data import DataLoader
 
-dtype = tf.float32
-
-class Speculator(tf.keras.Model):
-    """
-    SPECULATOR model
-    """
-
-    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, log_spectrum_shift=None, log_spectrum_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, trainable=True, optimizer=tf.keras.optimizers.Adam()):
-        
-        """
-        Constructor.
-        :param n_parameters: number of SED model parameters (inputs to the network)
-        :param n_wavelengths: number of wavelengths in the modelled SEDs
-        :param pca_transform_matrix: the PCA basis vectors, ie., an [n_pcas x n_wavelengths] matrix
-        :param parameters_shift: shift for input parameters
-        :param parameters_scalet: scale for input parameters
-        :param pca_shift: shift for PCA coefficients
-        :param pca_scale: scale for PCA coefficients
-        :param log_spectrum_shift: shift for the output spectra
-        :param log_spectrum_scale: scale for the output spectra
-        :param n_hiddens: list with number of hidden units for each hidden layer
-        :param restore: (bool) whether to restore an previously trained model or not
-        :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
-        """
-        
-        # super
-        super(Speculator, self).__init__()
-        
-        # restore
-        if restore is True:
-            self.restore(restore_filename)
-            
-        # else set variables from input parameters
-        else:
-            # parameters
-            self.n_parameters = n_parameters
-            self.n_wavelengths = pca_transform_matrix.shape[-1]
-            self.n_pcas = pca_transform_matrix.shape[0]
-            self.n_hidden = n_hidden
-            self.wavelengths = wavelengths
-
-            # architecture
-            self.architecture = [self.n_parameters] + self.n_hidden + [self.n_pcas]
-            self.n_layers = len(self.architecture) - 1
-
-            # PCA transform matrix
-            self.pca_transform_matrix_ = pca_transform_matrix
-
-            # shifts and scales...
-        
-            # input parameters shift and scale
-            self.parameters_shift_ = parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters)
-            self.parameters_scale_ = parameters_scale if parameters_scale is not None else np.ones(self.n_parameters)
-
-            # PCA shift and scale
-            self.pca_shift_ = pca_shift if pca_shift is not None else np.zeros(self.n_pcas)
-            self.pca_scale_ = pca_scale if pca_scale is not None else np.ones(self.n_pcas)
-
-            # spectrum shift and scale
-            self.log_spectrum_shift_ = log_spectrum_shift if log_spectrum_shift is not None else np.zeros(self.n_wavelengths)
-            self.log_spectrum_scale_ = log_spectrum_scale if log_spectrum_scale is not None else np.ones(self.n_wavelengths)
-
-        # shifts and scales and transform matrix into tensorflow constants...
-        
-        # input parameters shift and scale
-        self.parameters_shift = tf.constant(self.parameters_shift_, dtype=dtype, name='parameters_shift')
-        self.parameters_scale = tf.constant(self.parameters_scale_, dtype=dtype, name='parameters_scale')
-        
-        # PCA shift and scale
-        self.pca_shift = tf.constant(self.pca_shift_, dtype=dtype, name='pca_shift')
-        self.pca_scale = tf.constant(self.pca_scale_, dtype=dtype, name='pca_scale')
-        
-        # spectrum shift and scale
-        self.log_spectrum_shift = tf.constant(self.log_spectrum_shift_, dtype=dtype, name='log_spectrum_shift')
-        self.log_spectrum_scale = tf.constant(self.log_spectrum_scale_, dtype=dtype, name='log_spectrum_scale')
-        
-        # pca transform matrix
-        self.pca_transform_matrix = tf.constant(self.pca_transform_matrix_, dtype=dtype, name='pca_transform_matrix')
-        
-        # trainable variables...
-        
-        # weights, biases and activation function parameters for each layer of the network
-        self.W = []
-        self.b = []
-        self.alphas = []
-        self.betas = [] 
-        for i in range(self.n_layers):
-            self.W.append(tf.Variable(tf.random.normal([self.architecture[i], self.architecture[i+1]], 0., np.sqrt(2./self.n_parameters)), name="W_" + str(i), trainable=trainable))
-            self.b.append(tf.Variable(tf.zeros([self.architecture[i+1]]), name = "b_" + str(i), trainable=trainable))
-        for i in range(self.n_layers-1):
-            self.alphas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "alphas_" + str(i), trainable=trainable))
-            self.betas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "betas_" + str(i), trainable=trainable))
-        
-        # restore weights if restore = True
-        if restore is True:
-            for i in range(self.n_layers):
-                self.W[i].assign(self.W_[i])
-                self.b[i].assign(self.b_[i])
-            for i in range(self.n_layers-1):
-                self.alphas[i].assign(self.alphas_[i])
-                self.betas[i].assign(self.betas_[i])
-
-        self.optimizer = optimizer
-            
-    # non-linear activation function
-    def activation(self, x, alpha, beta):
-        
-        return tf.multiply(tf.add(beta, tf.multiply(tf.sigmoid(tf.multiply(alpha, x)), tf.subtract(1.0, beta)) ), x)
-
-    # call: forward pass through the network to predict pca coefficients
-    @tf.function
-    def call(self, parameters):
-        
-        outputs = []
-        layers = [tf.divide(tf.subtract(parameters, self.parameters_shift), self.parameters_scale)]
-        for i in range(self.n_layers - 1):
-            
-            # linear network operation
-            outputs.append(tf.add(tf.matmul(layers[-1], self.W[i]), self.b[i]))
-            
-            # non-linear activation function
-            layers.append(self.activation(outputs[-1], self.alphas[i], self.betas[i]))
-
-        # linear output layer
-        layers.append(tf.add(tf.matmul(layers[-1], self.W[-1]), self.b[-1]))
-            
-        # rescale the output (predicted PCA coefficients) and return
-        return tf.add(tf.multiply(layers[-1], self.pca_scale), self.pca_shift)
-            
-    # pass inputs through the network to predict spectrum
-    @tf.function
-    def log_spectrum(self, parameters):
-        
-        # pass through network to compute PCA coefficients
-        pca_coefficients = self.call(parameters)
-        
-        # transform from PCA to normalized spectrum basis; shift and re-scale normalized spectrum -> spectrum
-        return tf.add(tf.multiply(tf.matmul(pca_coefficients, self.pca_transform_matrix), self.log_spectrum_scale), self.log_spectrum_shift)
-    
-    # save network parameters to numpy arrays
-    def update_emulator_parameters(self):
-        
-        # put network parameters to numpy arrays
-        self.W_ = [self.W[i].numpy() for i in range(self.n_layers)]
-        self.b_ = [self.b[i].numpy() for i in range(self.n_layers)]
-        self.alphas_ = [self.alphas[i].numpy() for i in range(self.n_layers-1)]
-        self.betas_ = [self.betas[i].numpy() for i in range(self.n_layers-1)]
-        
-        # put shift and scale parameters to numpy arrays
-        self.parameters_shift_ = self.parameters_shift.numpy()
-        self.parameters_scale_ = self.parameters_scale.numpy()
-        self.pca_shift_ = self.pca_shift.numpy()
-        self.pca_scale_ = self.pca_scale.numpy()
-        self.log_spectrum_shift_ = self.log_spectrum_shift.numpy()
-        self.log_spectrum_scale_ = self.log_spectrum_scale.numpy()
-        
-        # pca transform matrix
-        self.pca_transform_matrix_ = self.pca_transform_matrix.numpy()
-        
-    # save
-    def save(self, filename):
- 
-        # attributes
-        attributes = [self.W_, 
-                      self.b_, 
-                      self.alphas_, 
-                      self.betas_, 
-                      self.parameters_shift_, 
-                      self.parameters_scale_,
-                      self.pca_shift_,
-                      self.pca_scale_,
-                      self.log_spectrum_shift_,
-                      self.log_spectrum_scale_,
-                      self.pca_transform_matrix_,
-                      self.n_parameters,
-                      self.n_wavelengths,
-                      self.wavelengths,
-                      self.n_pcas,
-                      self.n_hidden,
-                      self.n_layers,
-                      self.architecture]
-        
-        # save attributes to file
-        f = open(filename + ".pkl", 'wb')
-        pickle.dump(attributes, f)
-        f.close()
-        
-    # restore attributes
-    def restore(self, filename):
-        
-        # load attributes
-        f = open(filename + ".pkl", 'rb')
-        self.W_, self.b_, self.alphas_, self.betas_, self.parameters_shift_, \
-        self.parameters_scale_, self.pca_shift_, self.pca_scale_, self.log_spectrum_shift_, \
-        self.log_spectrum_scale_, self.pca_transform_matrix_, self.n_parameters, self.n_wavelengths, \
-        self.wavelengths, self.n_pcas, self.n_hidden, self.n_layers, self.architecture = pickle.load(f)
-        f.close()
-    
-    # forward prediction of spectrum given input parameters implemented in numpy
-    def log_spectrum_(self, parameters):
-        
-        # forward pass through the network
-        act = []
-        layers = [(parameters - self.parameters_shift_)/self.parameters_scale_]
-        for i in range(self.n_layers-1):
-
-            # linear network operation
-            act.append(np.dot(layers[-1], self.W_[i]) + self.b_[i])
-
-            # pass through activation function
-            layers.append((self.betas_[i] + (1.-self.betas_[i])*1./(1.+np.exp(-self.alphas_[i]*act[-1])))*act[-1])
-
-        # final (linear) layer -> (normalized) PCA coefficients
-        layers.append(np.dot(layers[-1], self.W_[-1]) + self.b_[-1])
-
-        # rescale PCA coefficients, multiply out PCA basis -> normalized spectrum, shift and re-scale spectrum -> output spectrum
-        return np.dot(layers[-1]*self.pca_scale_ + self.pca_shift_, self.pca_transform_matrix_)*self.log_spectrum_scale_ + self.log_spectrum_shift_
-
-    ### Infrastructure for network training ###
-
-    @tf.function
-    def compute_loss_spectra(self, spectra, parameters, noise_floor):
-
-      return tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(tf.exp(self.log_spectrum(parameters)), spectra), tf.square(noise_floor))))      
-
-    @tf.function
-    def compute_loss_and_gradients_spectra(self, spectra, parameters, noise_floor):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(tf.exp(self.log_spectrum(parameters)), spectra), tf.square(noise_floor)))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables)
-
-      return loss, gradients
-
-    def training_step_spectra(self, spectra, parameters, noise_floor):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients_spectra(spectra, parameters, noise_floor)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_spectra(self, spectra, parameters, noise_floor, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((spectra, parameters, noise_floor)).batch(int(spectra.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for spectra_, parameters_, noise_floor_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_spectra(spectra_, parameters_, noise_floor_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*spectra_.shape[0]/spectra.shape[0])
-        accumulated_loss.assign_add(loss*spectra_.shape[0]/spectra.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
-
-      return accumulated_loss
-
-    @tf.function
-    def compute_loss_pca(self, pca, parameters):
-
-      return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(parameters), pca)))      
-
-    @tf.function
-    def compute_loss_and_gradients_pca(self, pca, parameters):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(parameters), pca))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables)
-
-      return loss, gradients
-
-    def training_step_pca(self, pca, parameters):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients_pca(pca, parameters)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_pca(self, pca, parameters, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((pca, parameters)).batch(int(pca.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for pca_, parameters_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_pca(pca_, parameters_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*pca_.shape[0]/pca.shape[0])
-        accumulated_loss.assign_add(loss*pca_.shape[0]/pca.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
-
-      return accumulated_loss
-
-    @tf.function
-    def compute_loss_log_spectra(self, log_spectra, parameters):
-
-      return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra)))      
-
-    @tf.function
-    def compute_loss_and_gradients_log_spectra(self, log_spectra, parameters):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables)
-
-      return loss, gradients
-
-    def training_step_log_spectra(self, log_spectra, parameters):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra, parameters)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_log_spectra(self, log_spectra, parameters, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((log_spectra, parameters)).batch(int(log_spectra.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for log_spectra_, parameters_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra_, parameters_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*log_spectra_.shape[0]/log_spectra.shape[0])
-        accumulated_loss.assign_add(loss*log_spectra_.shape[0]/log_spectra.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
-
-      return accumulated_loss
-
+# To do: copy and translate Speculator class over
 
 class SpectrumPCA():
     """
@@ -528,12 +149,12 @@ class SpectrumPCA():
         return log_spectra, log_spectra_in_basis
 
 
-class Photulator(tf.keras.Model):
+class Photulator(torch.nn.Module):
     """
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, trainable=True, optimizer=tf.keras.optimizers.Adam()):
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, trainable=True, optimizer=lambda x: torch.optim.Adam(x, lr=1e-3)):
         
         """
         Constructor.
@@ -550,42 +171,28 @@ class Photulator(tf.keras.Model):
         
         # super
         super(Photulator, self).__init__()
-        
-        # restore
-        if restore is True:
-            self.restore(restore_filename)
-            
-        # else set variables from input parameters
-        else:
-            # parameters
-            self.n_parameters = n_parameters
-            self.n_hidden = n_hidden
-            self.filters = filters
-            self.n_filters = len(filters)
 
-            # architecture
-            self.architecture = [self.n_parameters] + self.n_hidden + [self.n_filters]
-            self.n_layers = len(self.architecture) - 1
+        # parameters
+        self.n_parameters = n_parameters
+        self.n_hidden = n_hidden
+        self.filters = filters
+        self.n_filters = len(filters)
 
-            # shifts and scales...
-        
-            # input parameters shift and scale
-            self.parameters_shift_ = parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters)
-            self.parameters_scale_ = parameters_scale if parameters_scale is not None else np.ones(self.n_parameters)
+        # architecture
+        self.architecture = [self.n_parameters] + self.n_hidden + [self.n_filters]
+        self.n_layers = len(self.architecture) - 1
 
-            # spectrum shift and scale
-            self.magnitudes_shift_ = magnitudes_shift if magnitudes_shift is not None else np.zeros(self.n_filters)
-            self.magnitudes_scale_ = magnitudes_scale if magnitudes_scale is not None else np.ones(self.n_filters)
+        # shifts and scales...
 
         # shifts and scales and transform matrix into tensorflow constants...
         
         # input parameters shift and scale
-        self.parameters_shift = tf.constant(self.parameters_shift_, dtype=dtype, name='parameters_shift')
-        self.parameters_scale = tf.constant(self.parameters_scale_, dtype=dtype, name='parameters_scale')
+        self.parameters_shift = torch.tensor(parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters), dtype=torch.float32)
+        self.parameters_scale = torch.tensor(parameters_scale if parameters_scale is not None else np.ones(self.n_parameters), dtype=torch.float32)
         
         # spectrum shift and scale
-        self.magnitudes_shift = tf.constant(self.magnitudes_shift_, dtype=dtype, name='magnitudes_shift')
-        self.magnitudes_scale = tf.constant(self.magnitudes_scale_, dtype=dtype, name='magnitudes_scale')
+        self.magnitudes_shift = torch.tensor(magnitudes_shift if magnitudes_shift is not None else np.zeros(self.n_filters), dtype=torch.float32)
+        self.magnitudes_scale = torch.tensor(magnitudes_scale if magnitudes_scale is not None else np.ones(self.n_filters), dtype=torch.float32)
         
         # trainable variables...
         
@@ -595,931 +202,86 @@ class Photulator(tf.keras.Model):
         self.alphas = []
         self.betas = [] 
         for i in range(self.n_layers):
-            self.W.append(tf.Variable(tf.random.normal([self.architecture[i], self.architecture[i+1]], 0., np.sqrt(2./self.n_parameters)), name="W_" + str(i), trainable=trainable))
-            self.b.append(tf.Variable(tf.zeros([self.architecture[i+1]]), name = "b_" + str(i), trainable=trainable))
+            self.W.append( torch.nn.Parameter( torch.sqrt(2. / self.n_parameters) * torch.randn((self.architecture[i], self.architecture[i+1])) ) )
+            self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))))
         for i in range(self.n_layers-1):
-            self.alphas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "alphas_" + str(i), trainable=trainable))
-            self.betas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "betas_" + str(i), trainable=trainable))
-        
-        # restore weights if restore = True
-        if restore is True:
-            for i in range(self.n_layers):
-                self.W[i].assign(self.W_[i])
-                self.b[i].assign(self.b_[i])
-            for i in range(self.n_layers-1):
-                self.alphas[i].assign(self.alphas_[i])
-                self.betas[i].assign(self.betas_[i])
+            self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
+            self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
 
-        self.optimizer = optimizer
+
+        self.optimizer = optimizer(self.parameters())
             
     # non-linear activation function
     def activation(self, x, alpha, beta):
         
-        return tf.multiply(tf.add(beta, tf.multiply(tf.sigmoid(tf.multiply(alpha, x)), tf.subtract(1.0, beta)) ), x)
+        return torch.multiply(torch.add(beta, torch.multiply(torch.sigmoid(torch.multiply(alpha, x)), torch.subtract(1.0, beta)) ), x)
 
     # call: forward pass through the network to predict magnitudes
-    @tf.function
-    def call(self, parameters):
+    def forward(self, parameters):
         
-        outputs = []
-        layers = [tf.divide(tf.subtract(parameters, self.parameters_shift), self.parameters_scale)]
+        output = torch.divide(torch.subtract(parameters, self.parameters_shift), self.parameters_scale)
         for i in range(self.n_layers - 1):
             
-            # linear network operation
-            outputs.append(tf.add(tf.matmul(layers[-1], self.W[i]), self.b[i]))
-            
             # non-linear activation function
-            layers.append(self.activation(outputs[-1], self.alphas[i], self.betas[i]))
+            output = self.activation(torch.add(torch.matmul(output, self.W[i]), self.b[i]), self.alphas[i], self.betas[i])
 
         # linear output layer
-        layers.append(tf.add(tf.matmul(layers[-1], self.W[-1]), self.b[-1]))
+        output = torch.add(torch.matmul(output, self.W[-1]), self.b[-1])
             
-        # rescale the output and return
-        return tf.add(tf.multiply(layers[-1], self.magnitudes_scale), self.magnitudes_shift)
+        # rescale the output
+        output = torch.add(torch.multiply(output, self.magnitudes_scale), self.magnitudes_shift)
+
+        return output
             
     # pass inputs through the network to predict spectrum
-    @tf.function
     def magnitudes(self, parameters):
         
         # call forward pass through network
-        return self.call(parameters)
-    
-    # save network parameters to numpy arrays
-    def update_emulator_parameters(self):
-        
-        # put network parameters to numpy arrays
-        self.W_ = [self.W[i].numpy() for i in range(self.n_layers)]
-        self.b_ = [self.b[i].numpy() for i in range(self.n_layers)]
-        self.alphas_ = [self.alphas[i].numpy() for i in range(self.n_layers-1)]
-        self.betas_ = [self.betas[i].numpy() for i in range(self.n_layers-1)]
-        
-        # put shift and scale parameters to numpy arrays
-        self.parameters_shift_ = self.parameters_shift.numpy()
-        self.parameters_scale_ = self.parameters_scale.numpy()
-        self.magnitudes_shift_ = self.magnitudes_shift.numpy()
-        self.magnitudes_scale_ = self.magnitudes_scale.numpy()
-        
-    # save
-    def save(self, filename):
- 
-        # attributes
-        attributes = [self.W_, 
-                      self.b_, 
-                      self.alphas_, 
-                      self.betas_, 
-                      self.parameters_shift_, 
-                      self.parameters_scale_,
-                      self.magnitudes_shift_,
-                      self.magnitudes_scale_,
-                      self.n_parameters,
-                      self.n_filters,
-                      self.filters,
-                      self.n_hidden,
-                      self.n_layers,
-                      self.architecture]
-        
-        # save attributes to file
-        f = open(filename + ".pkl", 'wb')
-        pickle.dump(attributes, f)
-        f.close()
-        
-    # restore attributes
-    def restore(self, filename):
-        
-        # load attributes
-        f = open(filename + ".pkl", 'rb')
-        self.W_, self.b_, self.alphas_, self.betas_, self.parameters_shift_, \
-        self.parameters_scale_, self.magnitudes_shift_, \
-        self.magnitudes_scale_, self.n_parameters, self.n_filters, self.filters, \
-        self.n_hidden, self.n_layers, self.architecture = pickle.load(f)
-        f.close()
-    
-    # forward prediction of spectrum given input parameters implemented in numpy
-    def magnitudes_(self, parameters):
-        
-        # forward pass through the network
-        act = []
-        layers = [(parameters - self.parameters_shift_)/self.parameters_scale_]
-        for i in range(self.n_layers-1):
-
-            # linear network operation
-            act.append(np.dot(layers[-1], self.W_[i]) + self.b_[i])
-
-            # pass through activation function
-            layers.append((self.betas_[i] + (1.-self.betas_[i])*1./(1.+np.exp(-self.alphas_[i]*act[-1])))*act[-1])
-
-        # final (linear) layer -> (normalized) PCA coefficients
-        layers.append(np.dot(layers[-1], self.W_[-1]) + self.b_[-1])
-
-        # rescale and output
-        return layers[-1]*self.magnitudes_scale_ + self.magnitudes_shift_
+        return self.forward(parameters)
 
     ### Infrastructure for network training ###
 
-    @tf.function
     def compute_loss(self, theta, mags):
 
-        return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(theta), mags)))      
+        return torch.sqrt(torch.mean( torch.square(torch.subtract(self.forward(theta), mags)) ))    
 
-    @tf.function
-    def compute_loss_and_gradients(self, theta, mags):
 
-        # compute loss on the tape
-        with tf.GradientTape() as tape:
+    def training_step(self, theta, mags, maxbatch=10000):
 
-            # loss
-            loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.call(theta), mags)))
+    	if theta.shape[0] < maxbatch:
 
-        # compute gradients
-        gradients = tape.gradient(loss, self.trainable_variables)
+    		# loss
+	        loss = self.loss(theta, mags)
 
-        return loss, gradients
+	        # backprop
+	        loss.backward()
 
-    def training_step(self, theta, mags):
+	        # update
+	        self.optimizer.step()
+	        self.optimizer.zero_grad()
+	        
+	        return loss
 
-        # compute loss and gradients
-        loss, gradients = self.compute_loss_and_gradients(theta, mags)
+	    else:
 
-        # apply gradients
-        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-        return loss
-
-    def training_step_with_accumulated_gradients(self, theta, mags, accumulation_steps=10):
-
-        # create dataset to do sub-calculations over
-        dataset = tf.data.Dataset.from_tensor_slices((theta, mags)).batch(int(theta.shape[0]/accumulation_steps))
-
-        # initialize gradients and loss (to zero)
-        accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
-        accumulated_loss = tf.Variable(0., trainable=False)
-
-        # loop over sub-batches
-        for theta_, mags_ in dataset:
+	    	# create iterable dataset
+        	dataloader = DataLoader(TensorDataset(theta, mags), batch_size=maxbatch)
         
-            # calculate loss and gradients
-            loss, gradients = self.compute_loss_and_gradients(theta_, mags_)
-
-            # update the accumulated gradients and loss
-            for i in range(len(accumulated_gradients)):
-                accumulated_gradients[i].assign_add(gradients[i]*theta_.shape[0]/theta.shape[0])
-            accumulated_loss.assign_add(loss*theta_.shape[0]/theta.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
-
-        return accumulated_loss
-
-
-
-class SpeculatorLogAutoencoder(tf.keras.Model):
-    """
-    SPECULATOR model
-    """
-
-    def __init__(self, n_parameters=None, wavelengths=None, parameters_shift=None, parameters_scale=None, log_spectrum_shift=None, log_spectrum_scale=None, n_hidden=[50,50], optimizer=tf.keras.optimizers.Adam(), restore=False, restore_filename=None, trainable=True):
-        
-      """
-      Constructor.
-      :param n_parameters: number of SED model parameters (inputs to the network)
-      :param n_wavelengths: number of wavelengths in the modelled SEDs
-      :param parameters_shift: shift for input parameters
-      :param parameters_scalet: scale for input parameters
-      :param log_spectrum_shift: shift for the output spectra
-      :param log_spectrum_scale: scale for the output spectra
-      :param n_hiddens: list with number of hidden units for each hidden layer
-      :param restore: (bool) whether to restore an previously trained model or not
-      :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
-      """
-        
-      # super
-      super(SpeculatorLogAutoencoder, self).__init__()
-        
-      # restore
-      if restore is True:
-        self.restore(restore_filename)
-            
-      # else set variables from input parameters
-      else:
-        # parameters
-        self.n_parameters = n_parameters
-        self.wavelengths = wavelengths
-        self.n_wavelengths = len(wavelengths)
-        self.n_hidden = n_hidden
-        self.wavelengths = wavelengths
-
-        # architecture
-        self.architecture = [self.n_parameters] + self.n_hidden + [self.n_wavelengths]
-        self.n_layers = len(self.architecture) - 1
-
-        # shifts and scales...
-    
-        # input parameters shift and scale
-        self.parameters_shift_ = parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters)
-        self.parameters_scale_ = parameters_scale if parameters_scale is not None else np.ones(self.n_parameters)
-
-        # spectrum shift and scale
-        self.log_spectrum_shift_ = log_spectrum_shift if log_spectrum_shift is not None else np.zeros(self.n_wavelengths)
-        self.log_spectrum_scale_ = log_spectrum_scale if log_spectrum_scale is not None else np.ones(self.n_wavelengths)
-
-      # shifts and scales and transform matrix into tensorflow constants...
-      
-      # input parameters shift and scale
-      self.parameters_shift = tf.constant(self.parameters_shift_, dtype=dtype, name='parameters_shift')
-      self.parameters_scale = tf.constant(self.parameters_scale_, dtype=dtype, name='parameters_scale')
-      
-      # spectrum shift and scale
-      self.log_spectrum_shift = tf.constant(self.log_spectrum_shift_, dtype=dtype, name='spectrum_shift')
-      self.log_spectrum_scale = tf.constant(self.log_spectrum_scale_, dtype=dtype, name='spectrum_scale')
-        
-      # trainable variables...
-      
-      # weights, biases and activation function parameters for each layer of the network
-      self.W = []
-      self.b = []
-      self.alphas = []
-      self.betas = [] 
-      for i in range(self.n_layers):
-        self.W.append(tf.Variable(tf.random.normal([self.architecture[i], self.architecture[i+1]], 0., 1e-3), name="W_" + str(i), trainable=trainable))
-        self.b.append(tf.Variable(tf.zeros([self.architecture[i+1]]), name = "b_" + str(i), trainable=trainable))
-      for i in range(self.n_layers-1):
-        self.alphas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "alphas_" + str(i), trainable=trainable))
-        self.betas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "betas_" + str(i), trainable=trainable))
-
-      # restore weights if restore = True
-      if restore is True:
-        for i in range(self.n_layers):
-          self.W[i].assign(self.W_[i])
-          self.b[i].assign(self.b_[i])
-        for i in range(self.n_layers-1):
-          self.alphas[i].assign(self.alphas_[i])
-          self.betas[i].assign(self.betas_[i])
-
-      self.optimizer = optimizer
-            
-    # non-linear activation function
-    def activation(self, x, alpha, beta):
-        
-      return tf.multiply(tf.add(beta, tf.multiply(tf.sigmoid(tf.multiply(alpha, x)), tf.subtract(1.0, beta)) ), x)
-
-    # call: forward pass through the network to predict the spectra
-    @tf.function
-    def call(self, parameters):
-        
-      outputs = []
-      layers = [tf.divide(tf.subtract(parameters, self.parameters_shift), self.parameters_scale)]
-      for i in range(self.n_layers - 1):
-          
-        # linear network operation
-        outputs.append(tf.add(tf.matmul(layers[-1], self.W[i]), self.b[i]))
-          
-        # non-linear activation function
-        layers.append(self.activation(outputs[-1], self.alphas[i], self.betas[i]))
-
-      # linear output layer: at this point we have
-      layers.append(tf.add(tf.matmul(layers[-1], self.W[-1]), self.b[-1]))
-          
-      # rescale -> output log spectra
-      return tf.add(tf.multiply(layers[-1], self.log_spectrum_scale), self.log_spectrum_shift)
-
-    # spectrum
-    @tf.function
-    def spectrum(self, parameters):
-
-      return tf.exp(self.call(parameters))
-
-    # spectrum
-    @tf.function
-    def log_spectrum(self, parameters):
-
-      return self.call(parameters)
-    
-    # save network parameters to numpy arrays
-    def update_emulator_parameters(self):
-        
-      # put network parameters to numpy arrays
-      self.W_ = [self.W[i].numpy() for i in range(self.n_layers)]
-      self.b_ = [self.b[i].numpy() for i in range(self.n_layers)]
-      self.alphas_ = [self.alphas[i].numpy() for i in range(self.n_layers-1)]
-      self.betas_ = [self.betas[i].numpy() for i in range(self.n_layers-1)]
-      
-      # put shift and scale parameters to numpy arrays
-      self.parameters_shift_ = self.parameters_shift.numpy()
-      self.parameters_scale_ = self.parameters_scale.numpy()
-      self.log_spectrum_shift_ = self.log_spectrum_shift.numpy()
-      self.log_spectrum_scale_ = self.log_spectrum_scale.numpy()
-        
-    # save
-    def save(self, filename):
- 
-      # attributes
-      attributes = [self.W_, 
-                    self.b_, 
-                    self.alphas_, 
-                    self.betas_, 
-                    self.parameters_shift_, 
-                    self.parameters_scale_,
-                    self.log_spectrum_shift_,
-                    self.log_spectrum_scale_,
-                    self.n_parameters,
-                    self.n_wavelengths,
-                    self.wavelengths,
-                    self.n_hidden,
-                    self.n_layers,
-                    self.architecture]
-      
-      # save attributes to file
-      f = open(filename + ".pkl", 'wb')
-      pickle.dump(attributes, f)
-      f.close()
-        
-    # restore attributes
-    def restore(self, filename):
-        
-      # load attributes
-      f = open(filename + ".pkl", 'rb')
-      self.W_, self.b_, self.alphas_, self.betas_, self.parameters_shift_, \
-      self.parameters_scale_, self.log_spectrum_shift_, \
-      self.log_spectrum_scale_, self.n_parameters, self.n_wavelengths, \
-      self.wavelengths, self.n_hidden, self.n_layers, self.architecture = pickle.load(f)
-      f.close()
-
-    ### Infrastructure for network training ###
-
-    @tf.function
-    def compute_loss_spectra(self, spectra, parameters, noise_floor):
-
-      return tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(self.spectrum(parameters), spectra), tf.square(noise_floor))))      
-
-    @tf.function
-    def compute_loss_and_gradients_spectra(self, spectra, parameters, noise_floor):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(self.spectrum(parameters), spectra), tf.square(noise_floor)))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables)
-
-      return loss, gradients
-
-    def training_step_spectra(self, spectra, parameters, noise_floor):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients(spectra, parameters, noise_floor)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_spectra(self, spectra, parameters, noise_floor, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((spectra, parameters, noise_floor)).batch(int(spectra.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for spectra_, parameters_, noise_floor_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_spectra(spectra_, parameters_, noise_floor_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*spectra_.shape[0]/spectra.shape[0])
-        accumulated_loss.assign_add(loss*spectra_.shape[0]/spectra.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
-
-      return accumulated_loss
-
-    @tf.function
-    def compute_loss_log_spectra(self, log_spectra, parameters):
-
-      return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra)))      
-
-    @tf.function
-    def compute_loss_and_gradients_log_spectra(self, log_spectra, parameters):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables)
-
-      return loss, gradients
-
-    def training_step_log_spectra(self, log_spectra, parameters):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra, parameters)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_log_spectra(self, log_spectra, parameters, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((log_spectra, parameters)).batch(int(log_spectra.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for log_spectra_, parameters_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra_, parameters_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*log_spectra_.shape[0]/log_spectra.shape[0])
-        accumulated_loss.assign_add(loss*log_spectra_.shape[0]/log_spectra.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
-
-      return accumulated_loss
-
-
-class SpeculatorLinearAutoencoder(tf.keras.Model):
-    """
-    SPECULATOR model
-    """
-
-    def __init__(self, n_parameters=None, wavelengths=None, parameters_shift=None, parameters_scale=None, log_spectrum_shift=None, log_spectrum_scale=None, n_hidden=[50,50], optimizer=tf.keras.optimizers.Adam(), restore=False, restore_filename=None, trainable=True):
-        
-      """
-      Constructor.
-      :param n_parameters: number of SED model parameters (inputs to the network)
-      :param n_wavelengths: number of wavelengths in the modelled SEDs
-      :param parameters_shift: shift for input parameters
-      :param parameters_scalet: scale for input parameters
-      :param log_spectrum_shift: shift for the output spectra
-      :param log_spectrum_scale: scale for the output spectra
-      :param n_hiddens: list with number of hidden units for each hidden layer
-      :param restore: (bool) whether to restore an previously trained model or not
-      :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
-      """
-        
-      # super
-      super(SpeculatorLinearAutoencoder, self).__init__()
-        
-      # restore
-      if restore is True:
-        self.restore(restore_filename)
-            
-      # else set variables from input parameters
-      else:
-        # parameters
-        self.n_parameters = n_parameters
-        self.wavelengths = wavelengths
-        self.n_wavelengths = len(wavelengths)
-        self.n_hidden = n_hidden
-        self.wavelengths = wavelengths
-
-        # architecture
-        self.architecture = [self.n_parameters] + self.n_hidden + [self.n_wavelengths]
-        self.n_layers = len(self.architecture) - 1
-
-        # shifts and scales...
-    
-        # input parameters shift and scale
-        self.parameters_shift_ = parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters)
-        self.parameters_scale_ = parameters_scale if parameters_scale is not None else np.ones(self.n_parameters)
-
-        # spectrum shift and scale
-        self.log_spectrum_shift_ = log_spectrum_shift if log_spectrum_shift is not None else np.zeros(self.n_wavelengths)
-        self.log_spectrum_scale_ = log_spectrum_scale if log_spectrum_scale is not None else np.ones(self.n_wavelengths)
-
-      # shifts and scales and transform matrix into tensorflow constants...
-      
-      # input parameters shift and scale
-      self.parameters_shift = tf.constant(self.parameters_shift_, dtype=dtype, name='parameters_shift')
-      self.parameters_scale = tf.constant(self.parameters_scale_, dtype=dtype, name='parameters_scale')
-      
-      # spectrum shift and scale
-      self.log_spectrum_shift = tf.constant(self.log_spectrum_shift_, dtype=dtype, name='spectrum_shift')
-      self.log_spectrum_scale = tf.constant(self.log_spectrum_scale_, dtype=dtype, name='spectrum_scale')
-        
-      # trainable variables...
-      
-      # weights, biases and activation function parameters for each layer of the network
-      self.W = []
-      self.b = []
-      self.alphas = []
-      self.betas = [] 
-      for i in range(self.n_layers):
-        self.W.append(tf.Variable(tf.random.normal([self.architecture[i], self.architecture[i+1]], 0., 1e-3), name="W_" + str(i), trainable=trainable))
-        self.b.append(tf.Variable(tf.zeros([self.architecture[i+1]]), name = "b_" + str(i), trainable=trainable))
-      for i in range(self.n_layers-1):
-        self.alphas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "alphas_" + str(i), trainable=trainable))
-        self.betas.append(tf.Variable(tf.random.normal([self.architecture[i+1]]), name = "betas_" + str(i), trainable=trainable))
-
-      # restore weights if restore = True
-      if restore is True:
-        for i in range(self.n_layers):
-          self.W[i].assign(self.W_[i])
-          self.b[i].assign(self.b_[i])
-        for i in range(self.n_layers-1):
-          self.alphas[i].assign(self.alphas_[i])
-          self.betas[i].assign(self.betas_[i])
-
-      self.optimizer = optimizer
-            
-    # non-linear activation function
-    def activation(self, x, alpha, beta):
-        
-      return tf.multiply(tf.add(beta, tf.multiply(tf.sigmoid(tf.multiply(alpha, x)), tf.subtract(1.0, beta)) ), x)
-
-    # call: forward pass through the network to predict the spectra
-    @tf.function
-    def call(self, parameters):
-        
-      outputs = []
-      layers = [tf.divide(tf.subtract(parameters, self.parameters_shift), self.parameters_scale)]
-      for i in range(self.n_layers - 1):
-          
-        # linear network operation
-        outputs.append(tf.add(tf.matmul(layers[-1], self.W[i]), self.b[i]))
-          
-        # non-linear activation function
-        layers.append(self.activation(outputs[-1], self.alphas[i], self.betas[i]))
-
-      # output layer
-      layers.append(tf.einsum('ij,jk->ijk', tf.exp(layers[-1]), tf.exp(self.W[-1])))
-          
-      # rescale -> output spectra
-      return tf.reduce_sum(layers[-1], axis=1)
-
-    # spectrum
-    @tf.function
-    def spectrum(self, parameters):
-
-      return self.call(parameters)
-
-    # spectrum
-    @tf.function
-    def log_spectrum(self, parameters):
-
-      return tf.math.log(self.call(parameters))
-    
-    # save network parameters to numpy arrays
-    def update_emulator_parameters(self):
-        
-      # put network parameters to numpy arrays
-      self.W_ = [self.W[i].numpy() for i in range(self.n_layers)]
-      self.b_ = [self.b[i].numpy() for i in range(self.n_layers)]
-      self.alphas_ = [self.alphas[i].numpy() for i in range(self.n_layers-1)]
-      self.betas_ = [self.betas[i].numpy() for i in range(self.n_layers-1)]
-      
-      # put shift and scale parameters to numpy arrays
-      self.parameters_shift_ = self.parameters_shift.numpy()
-      self.parameters_scale_ = self.parameters_scale.numpy()
-      self.log_spectrum_shift_ = self.log_spectrum_shift.numpy()
-      self.log_spectrum_scale_ = self.log_spectrum_scale.numpy()
-        
-    # save
-    def save(self, filename):
- 
-      # attributes
-      attributes = [self.W_, 
-                    self.b_, 
-                    self.alphas_, 
-                    self.betas_, 
-                    self.parameters_shift_, 
-                    self.parameters_scale_,
-                    self.log_spectrum_shift_,
-                    self.log_spectrum_scale_,
-                    self.n_parameters,
-                    self.n_wavelengths,
-                    self.wavelengths,
-                    self.n_hidden,
-                    self.n_layers,
-                    self.architecture]
-      
-      # save attributes to file
-      f = open(filename + ".pkl", 'wb')
-      pickle.dump(attributes, f)
-      f.close()
-        
-    # restore attributes
-    def restore(self, filename):
-        
-      # load attributes
-      f = open(filename + ".pkl", 'rb')
-      self.W_, self.b_, self.alphas_, self.betas_, self.parameters_shift_, \
-      self.parameters_scale_, self.log_spectrum_shift_, \
-      self.log_spectrum_scale_, self.n_parameters, self.n_wavelengths, \
-      self.wavelengths, self.n_hidden, self.n_layers, self.architecture = pickle.load(f)
-      f.close()
-
-    ### Infrastructure for network training ###
-
-    @tf.function
-    def compute_loss_spectra(self, spectra, parameters, noise_floor):
-
-      return tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(self.spectrum(parameters), spectra), tf.square(noise_floor))))      
-
-    @tf.function
-    def compute_loss_and_gradients_spectra(self, spectra, parameters, noise_floor):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(self.spectrum(parameters), spectra), tf.square(noise_floor)))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables)
-
-      return loss, gradients
-
-    def training_step_spectra(self, spectra, parameters, noise_floor):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients(spectra, parameters, noise_floor)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_spectra(self, spectra, parameters, noise_floor, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((spectra, parameters, noise_floor)).batch(int(spectra.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for spectra_, parameters_, noise_floor_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_spectra(spectra_, parameters_, noise_floor_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*spectra_.shape[0]/spectra.shape[0])
-        accumulated_loss.assign_add(loss*spectra_.shape[0]/spectra.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
-
-      return accumulated_loss
-
-    @tf.function
-    def compute_loss_log_spectra(self, log_spectra, parameters):
-
-      return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra)))      
-
-    @tf.function
-    def compute_loss_and_gradients_log_spectra(self, log_spectra, parameters):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables)
-
-      return loss, gradients
-
-    def training_step_log_spectra(self, log_spectra, parameters):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra, parameters)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_log_spectra(self, log_spectra, parameters, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((log_spectra, parameters)).batch(int(log_spectra.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for log_spectra_, parameters_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra_, parameters_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*log_spectra_.shape[0]/log_spectra.shape[0])
-        accumulated_loss.assign_add(loss*log_spectra_.shape[0]/log_spectra.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables))
-
-      return accumulated_loss
-
-
-class SpeculatorLogLinearAutoencoder(tf.keras.Model):
-    """
-    SPECULATOR model
-    """
-
-    def __init__(self, n_parameters=None, wavelengths=None, parameters_shift=None, parameters_scale=None, log_spectrum_shift=None, log_spectrum_scale=None, n_hidden_log=[50,50], n_hidden_linear=[50,50], optimizer=tf.keras.optimizers.Adam(), restore=False, restore_filename_log=None, restore_filename_linear=None, trainable=True):
-        
-      """
-      Constructor.
-      :param n_parameters: number of SED model parameters (inputs to the network)
-      :param n_wavelengths: number of wavelengths in the modelled SEDs
-      :param parameters_shift: shift for input parameters
-      :param parameters_scalet: scale for input parameters
-      :param log_spectrum_shift: shift for the output spectra
-      :param log_spectrum_scale: scale for the output spectra
-      :param n_hiddens: list with number of hidden units for each hidden layer
-      :param restore: (bool) whether to restore an previously trained model or not
-      :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
-      """
-        
-      # super
-      super(SpeculatorLogLinearAutoencoder, self).__init__()
-      
-      # create both log and linear autoencoder models
-      self.LogAutoencoder = SpeculatorLogAutoencoder(n_parameters=n_parameters, wavelengths=wavelengths, parameters_shift=parameters_shift, parameters_scale=parameters_scale, log_spectrum_shift=log_spectrum_shift, log_spectrum_scale=log_spectrum_scale, n_hidden=n_hidden_log, optimizer=tf.keras.optimizers.Adam(), restore=restore, restore_filename=restore_filename_log, trainable=True)
-      self.LinearAutoencoder = SpeculatorLinearAutoencoder(n_parameters=n_parameters, wavelengths=wavelengths, parameters_shift=parameters_shift, parameters_scale=parameters_scale, log_spectrum_shift=log_spectrum_shift, log_spectrum_scale=log_spectrum_scale, n_hidden=n_hidden_linear, optimizer=tf.keras.optimizers.Adam(), restore=restore, restore_filename=restore_filename_linear, trainable=True)
-      self.trainable_variables_ = self.LogAutoencoder.trainable_variables + self.LinearAutoencoder.trainable_variables
-
-    # log spectrum
-    @tf.function
-    def call(self, parameters):
-
-      # linear autoencoder term
-      linear_term = self.LinearAutoencoder.spectrum(parameters)
-
-      # log autoencoder term
-      log_term = self.LogAutoencoder.spectrum(parameters)
-
-      log_spectrum = tf.add(tf.math.log(linear_term), log_term)
-
-      return log_spectrum
-
-    # spectrum
-    @tf.function
-    def spectrum(self, parameters):
-
-      return tf.exp(self.call(parameters))
-
-    # spectrum
-    @tf.function
-    def log_spectrum(self, parameters):
-
-      return self.call(parameters)
-    
-    # save network parameters to numpy arrays
-    def update_emulator_parameters(self):
-        
-      # put network parameters to numpy arrays
-      self.LogAutoencoder.update_emulator_parameters()
-      self.LinearAutoencoder.update_emulator_parameters()
-
-    # save
-    def save(self, filename):
-      
-      self.LogAutoencoder.save(filename + '_log')
-      self.LinearAutoencoder.save(filename + '_linear')
-      
-    # restore attributes
-    def restore(self, filename):
-        
-      self.LogAutoencoder.restore(filename + '_log')
-      self.LinearAutoencoder.restore(filename + '_linear')      
-
-    ### Infrastructure for network training ###
-
-    @tf.function
-    def compute_loss_spectra(self, spectra, parameters, noise_floor):
-
-      return tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(self.spectrum(parameters), spectra), tf.square(noise_floor))))      
-
-    @tf.function
-    def compute_loss_and_gradients_spectra(self, spectra, parameters, noise_floor):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.divide(tf.math.squared_difference(self.spectrum(parameters), spectra), tf.square(noise_floor)))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables_)
-
-      return loss, gradients
-
-    def training_step_spectra(self, spectra, parameters, noise_floor):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients(spectra, parameters, noise_floor)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables_))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_spectra(self, spectra, parameters, noise_floor, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((spectra, parameters, noise_floor)).batch(int(spectra.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables_]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for spectra_, parameters_, noise_floor_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_spectra(spectra_, parameters_, noise_floor_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*spectra_.shape[0]/spectra.shape[0])
-        accumulated_loss.assign_add(loss*spectra_.shape[0]/spectra.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables_))
-
-      return accumulated_loss
-
-    @tf.function
-    def compute_loss_log_spectra(self, log_spectra, parameters):
-
-      return tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra)))      
-
-    @tf.function
-    def compute_loss_and_gradients_log_spectra(self, log_spectra, parameters):
-
-      # compute loss on the tape
-      with tf.GradientTape() as tape:
-
-        # loss
-        loss = tf.sqrt(tf.reduce_mean(tf.math.squared_difference(self.log_spectrum(parameters), log_spectra))) 
-
-      # compute gradients
-      gradients = tape.gradient(loss, self.trainable_variables_)
-
-      return loss, gradients
-
-    def training_step_log_spectra(self, log_spectra, parameters):
-
-      # compute loss and gradients
-      loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra, parameters)
-
-      # apply gradients
-      self.optimizer.apply_gradients(zip(gradients, self.trainable_variables_))
-
-      return loss
-
-    def training_step_with_accumulated_gradients_log_spectra(self, log_spectra, parameters, accumulation_steps=10):
-
-      # create dataset to do sub-calculations over
-      dataset = tf.data.Dataset.from_tensor_slices((log_spectra, parameters)).batch(int(log_spectra.shape[0]/accumulation_steps))
-
-      # initialize gradients and loss (to zero)
-      accumulated_gradients = [tf.Variable(tf.zeros_like(variable), trainable=False) for variable in self.trainable_variables_]
-      accumulated_loss = tf.Variable(0., trainable=False)
-
-      # loop over sub-batches
-      for log_spectra_, parameters_ in dataset:
-        
-        # calculate loss and gradients
-        loss, gradients = self.compute_loss_and_gradients_log_spectra(log_spectra_, parameters_)
-
-        # update the accumulated gradients and loss
-        for i in range(len(accumulated_gradients)):
-          accumulated_gradients[i].assign_add(gradients[i]*log_spectra_.shape[0]/log_spectra.shape[0])
-        accumulated_loss.assign_add(loss*log_spectra_.shape[0]/log_spectra.shape[0])
-        
-        # apply accumulated gradients
-        self.optimizer.apply_gradients(zip(accumulated_gradients, self.trainable_variables_))
-
-      return accumulated_loss
+	        # loop over sub batches
+	        for theta_, mags_ in dataloader:
+	            with torch.set_grad_enabled(True):
+	                
+	                # loss
+	                loss = self.loss(theta_, mags_) * theta_.shape[0] / theta.shape[0]
+
+	                # backprop
+	                loss.backward()
+	                
+	        # update parameters
+	        self.optimizer.step()
+	        self.optimizer.zero_grad()
+	        
+	        return loss
 
 
 class PhotulatorModelStack:
@@ -1527,10 +289,10 @@ class PhotulatorModelStack:
     def __init__(self, root_dir, filenames):
 
         # load emulator models
-        self.emulators = [Photulator(restore=True, restore_filename=root_dir+filename, trainable=False) for filename in filenames]
+        self.emulators = [torch.load(filename) for filename in filenames]
 
         # log10 constant
-        self.ln10 = tf.constant(np.log(10.), dtype=tf.float32)
+        self.ln10 = torch.tensor(np.log(10.), dtype=torch.float32)
 
         # how many emulators?
         self.n_emulators = len(filenames)
@@ -1538,17 +300,17 @@ class PhotulatorModelStack:
     # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def fluxes(self, theta, N):
 
-        return tf.concat([tf.exp( tf.multiply(tf.add(tf.multiply(-0.4, tf.add(self.emulators[i](theta), tf.expand_dims(N, -1))), 9.), self.ln10) ) for i in range(self.n_emulators)], axis=-1)
+        return torch.concat([torch.exp( torch.multiply(torch.add(torch.multiply(-0.4, torch.add(self.emulators[i].forward(theta), torch.unsqueeze(N, -1))), 9.), self.ln10) ) for i in range(self.n_emulators)], axis=-1)
 
     # compute magnitudes given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def magnitudes(self, theta, N):
 
-        return tf.concat([tf.add(self.emulators[i](theta), tf.expand_dims(N, -1)) for i in range(self.n_emulators)], axis=-1)
+        return torch.concat([torch.add(self.emulators[i].forward(theta), torch.unsqueeze(N, -1)) for i in range(self.n_emulators)], axis=-1)
 
 
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], gradient_accumulation_steps=[1, 1, 1, 10], epochs=1000, patience=20, root_dir='', verbose=True):
+def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3)):
 
     # architecture
     n_hidden = [n_units]*n_layers
@@ -1566,10 +328,10 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                            parameters_scale=parameters_scale, 
                            magnitudes_shift=magnitudes_shift[f], 
                            magnitudes_scale=magnitudes_scale[f], 
-                           n_hidden=[128, 128, 128, 128], 
+                           n_hidden=[n_units]*n_layers, 
                            restore=False, 
                            restore_filename=None,
-                           optimizer=tf.keras.optimizers.Adam())
+                           optimizer=optimizer).to(device)
 
         # train using cooling/heating schedule for lr/batch-size
         for i in range(len(lr)):
@@ -1578,46 +340,49 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                 print('learning rate = ' + str(lr[i]) + ', batch size = ' + str(batch_size[i]))
 
             # set learning rate
-            photulator.optimizer.lr = lr[i]
+            optimizer_state_dict = photulator.optimizer.state_dict()
+			state_dict['param_groups'][0]['lr'] = lr[i]
+			photulator.optimizer.load_state_dict(state_dict)
 
-            # split into validation and training sub-sets
-            n_validation = int(training_theta.shape[0] * validation_split)
-            n_training = training_theta.shape[0] - n_validation
-            training_selection = tf.random.shuffle([True] * n_training + [False] * n_validation)
-
-            # create iterable dataset (given batch size)
-            train_mag = tf.expand_dims(training_mag[:,f],-1)
-            training_data = tf.data.Dataset.from_tensor_slices((training_theta[training_selection], train_mag[training_selection])).shuffle(n_training).batch(batch_size[i])
+	        # dataset and dataloader
+	        dataset = TensorDataset(training_theta, torch.unsqueeze(training_mag[:,f],-1))
+	        training_data, validation_data = torch.utils.data.random_split(dataset, [int(len(dataset)*(1.-validation_split)), len(dataset) - int(len(dataset)*(1.-validation_split))])
+	        training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size)
 
             # set up training loss
             training_loss = [np.infty]
             validation_loss = [np.infty]
             best_loss = np.infty
-            early_stopping_counter = 0
+            best_state = photulator.state_dict()
+            patience_counter = 0
 
             # loop over epochs
             while early_stopping_counter < patience:
 
                 # loop over batches for a single epoch
-                for theta, mag in training_data:
+                for theta, mag in training_dataloader:
 
-                    # training step: check whether to accumulate gradients or not (only worth doing this for very large batch sizes)
-                    if gradient_accumulation_steps[i] == 1:
-                        loss = photulator.training_step(theta, mag)
-                    else:
-                        loss = photulator.training_step_with_accumulated_gradients(theta, mag, accumulation_steps=gradient_accumulation_steps[i])
+                	# move to correct device
+                	theta.to(device)
+                	mag.to(device)
+
+                    # training step
+                    loss = photulator.training_step(theta, mag, maxbatch=maxbatch)
 
                 # compute total loss and validation loss
-                validation_loss.append(photulator.compute_loss(training_theta[~training_selection], train_mag[~training_selection]).numpy())
+                validation_theta, validation_mag = validation_data[:]
+                validation_loss.append(photulator.compute_loss(validation_theta, validation_mag).cpu().detach().numpy())
 
                 # early stopping condition
                 if validation_loss[-1] < best_loss:
                     best_loss = validation_loss[-1]
-                    early_stopping_counter = 0
+                    best_state = self.state_dict()
+                    patience_counter = 0
                 else:
-                    early_stopping_counter += 1
-                if early_stopping_counter >= patience:
-                    photulator.update_emulator_parameters()
-                    photulator.save(root_dir + 'model_{}x{}'.format(n_layers, n_units) + filters[f])
+                    patience_counter += 1
+                if patience_counter >= patience:
+                	photulator.load_state_dict(best_state)
+                    torch.save(photulator, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
                     if verbose is True:
                         print('Validation loss = ' + str(best_loss))
+                    break

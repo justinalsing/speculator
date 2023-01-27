@@ -4,15 +4,7 @@ from setuptools import setup, find_packages
 import sys
 import platform
 
-install_requires = ["tqdm>=4.41.1", "numpy", "sklearn"]
-
-if platform.machine() == 'arm64':
-    try:
-        import tensorflow
-    except ImportError:
-        raise ImportError('install tensorflow manually')
-else:
-    install_requires.append('tensorflow>=2.3.0')
+install_requires = ["tqdm>=4.41.1", "numpy", "sklearn", "torch"]
 
 setup(name='speculator',
       version='v0.2',
