@@ -5,7 +5,168 @@ from sklearn.decomposition import IncrementalPCA
 from torch.utils.data import TensorDataset, Dataset
 from torch.utils.data import DataLoader
 
-# To do: copy and translate Speculator class over
+class Speculator(torch.nn.Module):
+    """
+    SPECULATOR model
+    """
+
+    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, log_spectrum_shift=None, log_spectrum_scale=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3)):
+        
+        """
+        Constructor.
+        :param n_parameters: number of SED model parameters (inputs to the network)
+        :param n_wavelengths: number of wavelengths in the modelled SEDs
+        :param pca_transform_matrix: the PCA basis vectors, ie., an [n_pcas x n_wavelengths] matrix
+        :param parameters_shift: shift for input parameters
+        :param parameters_scalet: scale for input parameters
+        :param pca_shift: shift for PCA coefficients
+        :param pca_scale: scale for PCA coefficients
+        :param log_spectrum_shift: shift for the output spectra
+        :param log_spectrum_scale: scale for the output spectra
+        :param n_hiddens: list with number of hidden units for each hidden layer
+        """
+        
+        # super
+        super(Speculator, self).__init__()
+        
+        # parameters
+        self.n_parameters = n_parameters
+        self.n_wavelengths = pca_transform_matrix.shape[-1]
+        self.n_pcas = pca_transform_matrix.shape[0]
+        self.n_hidden = n_hidden
+        self.wavelengths = wavelengths
+
+        # architecture
+        self.architecture = [self.n_parameters] + self.n_hidden + [self.n_pcas]
+        self.n_layers = len(self.architecture) - 1
+
+
+        # shifts and scales and transform matrix
+        
+        # input parameters shift and scale
+        self.parameters_shift = torch.tensor(parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters), dtype=torch.float32)
+        self.parameters_scale = torch.tensor(parameters_scale if parameters_scale is not None else np.ones(self.n_parameters), dtype=torch.float32)
+        
+        # PCA shift and scale
+        self.pca_shift = torch.tensor(pca_shift if pca_shift is not None else np.zeros(self.n_pcas), dtype=torch.float32)
+        self.pca_scale = torch.tensor(pca_scale if pca_scale is not None else np.ones(self.n_pcas), dtype=torch.float32)
+        
+        # spectrum shift and scale
+        self.log_spectrum_shift = torch.tensor(log_spectrum_shift if log_spectrum_shift is not None else np.zeros(self.n_wavelengths), dtype=torch.float32)
+        self.log_spectrum_scale = torch.tensor(log_spectrum_scale if log_spectrum_scale is not None else np.ones(self.n_wavelengths), dtype=torch.float32)
+        
+        # pca transform matrix
+        self.pca_transform_matrix = torch.tensor(pca_transform_matrix, dtype=torch.float32)
+        
+        # trainable variables...
+        
+        # weights, biases and activation function parameters for each layer of the network
+        self.W = []
+        self.b = []
+        self.alphas = []
+        self.betas = [] 
+        for i in range(self.n_layers):
+            self.W.append(torch.nn.Parameter( torch.sqrt(2. / self.n_parameters) * torch.randn((self.architecture[i], self.architecture[i+1])) ) )
+            self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))))
+        for i in range(self.n_layers-1):
+            self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
+            self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
+
+        # optimizer
+        self.optimizer = optimizer(self.parameters())
+
+    # non-linear activation function
+    def activation(self, x, alpha, beta):
+        
+        return torch.multiply(torch.add(beta, torch.multiply(torch.sigmoid(torch.multiply(alpha, x)), torch.subtract(1.0, beta)) ), x)
+
+    # call: forward pass through the network to predict magnitudes
+    def forward(self, parameters):
+        
+        output = torch.divide(torch.subtract(parameters, self.parameters_shift), self.parameters_scale)
+        for i in range(self.n_layers - 1):
+            
+            # non-linear activation function
+            output = self.activation(torch.add(torch.matmul(output, self.W[i]), self.b[i]), self.alphas[i], self.betas[i])
+
+        # linear output layer
+        output = torch.add(torch.matmul(output, self.W[-1]), self.b[-1])
+            
+        # rescale the output
+        output = torch.add(torch.multiply(output, self.pca_scale), self.pca_shift)
+
+        return output
+            
+    # pass inputs through the network to predict spectrum
+    def log_spectrum(self, parameters):
+        
+        # pass through network to compute PCA coefficients
+        pca_coefficients = self.forward(parameters)
+        
+        # transform from PCA to normalized spectrum basis; shift and re-scale normalized spectrum -> spectrum
+        return torch.add(torch.multiply(torch.matmul(pca_coefficients, self.pca_transform_matrix), self.log_spectrum_scale), self.log_spectrum_shift)
+ 
+    ### Infrastructure for network training ###
+
+    def compute_loss_spectra(self, spectra, parameters, noise_floor):
+
+        return torch.sqrt(torch.mean(torch.divide(torch.square(torch.subtract( torch.exp(self.log_spectrum(parameters)), spectra)), torch.square(noise_floor))))      
+
+    def compute_loss_pca(self, pca, parameters):
+
+      return torch.sqrt(torch.mean(torch.square(torch.subtract(self.call(parameters), pca))))      
+
+    def compute_loss_log_spectra(self, log_spectra, parameters):
+
+      return torch.sqrt(torch.mean(torch.square(torch.subtract(self.log_spectrum(parameters), log_spectra)))) 
+
+    def training_step(self, theta, outputs, maxbatch=10000, loss_type='pca', noise_floor=None):
+
+        if theta.shape[0] < maxbatch:
+
+            # loss
+            if loss_type == 'pca':
+                loss = self.compute_loss_pca(theta, outputs)
+            elif loss_type == 'log_spectra'
+                loss = self.compute_loss_log_spectra(theta, outputs)
+            elif loss_type =='spectra':
+                loss = self.compute_loss_spectra(theta, outputs, noise_floor)
+
+            # backprop
+            loss.backward()
+
+            # update
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            
+            return loss
+
+        else:
+
+            # create iterable dataset
+            dataloader = DataLoader(TensorDataset(theta, outputs), batch_size=maxbatch)
+        
+            # loop over sub batches
+            for theta_, outputs_ in dataloader:
+                with torch.set_grad_enabled(True):
+                    
+                    # loss
+                    if loss_type == 'pca':
+                        loss = self.compute_loss_pca(theta_, outputs_) * theta_.shape[0] / theta.shape[0]
+                    elif loss_type == 'log_spectra':
+                        loss = self.compute_loss_log_spectra(theta_, outputs_) * theta_.shape[0] / theta.shape[0]
+                    elif loss_type =='spectra':
+                        loss = self.compute_loss_spectra(theta_, outputs_, noise_floor)
+
+                    # backprop
+                    loss.backward()
+                    
+            # update parameters
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            
+            return loss     
+
 
 class SpectrumPCA():
     """
@@ -154,7 +315,7 @@ class Photulator(torch.nn.Module):
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], restore=False, restore_filename=None, trainable=True, optimizer=lambda x: torch.optim.Adam(x, lr=1e-3)):
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3)):
         
         """
         Constructor.
@@ -202,13 +363,13 @@ class Photulator(torch.nn.Module):
         self.alphas = []
         self.betas = [] 
         for i in range(self.n_layers):
-            self.W.append( torch.nn.Parameter( torch.sqrt(2. / self.n_parameters) * torch.randn((self.architecture[i], self.architecture[i+1])) ) )
+            self.W.append(torch.nn.Parameter( torch.sqrt(2. / self.n_parameters) * torch.randn((self.architecture[i], self.architecture[i+1])) ) )
             self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))))
         for i in range(self.n_layers-1):
             self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
             self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
 
-
+        # optimizer
         self.optimizer = optimizer(self.parameters())
             
     # non-linear activation function
