@@ -370,7 +370,7 @@ class Photulator(torch.nn.Module):
         self.alphas = []
         self.betas = []
         for i in range(self.n_layers):
-            self.W.append(torch.nn.Parameter( torch.sqrt(2. / self.n_parameters) * torch.randn((self.architecture[i], self.architecture[i+1])) ) )
+            self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ) )
             self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))))
         for i in range(self.n_layers-1):
             self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
