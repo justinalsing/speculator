@@ -377,7 +377,8 @@ class Photulator(torch.nn.Module):
             self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
 
         # optimizer
-        self.optimizer = optimizer(self.parameters())
+        self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
+        self.optimizer = optimizer(self.params)
 
     # non-linear activation function
     def activation(self, x, alpha, beta):
