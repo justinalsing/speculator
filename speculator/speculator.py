@@ -405,9 +405,9 @@ class Photulator(torch.nn.Module):
 
         # optimizer
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-
-        self.optimizer_constructor = optimizer
-        self.optimizer = self.optimizer_constructor(self.params)
+        #self.optimizer_constructor = optimizer
+        #self.optimizer = self.optimizer_constructor(self.params)
+        self.optimizer = optimizer(self.params)
 
     # change the device we're on
     def set_device(self, device):
@@ -426,7 +426,7 @@ class Photulator(torch.nn.Module):
             self.betas[i] = self.betas[i].to(device)
 
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-        self.optimizer = self.optimizer_constructor(self.params)
+        #self.optimizer = self.optimizer_constructor(self.params)
 
 
     # non-linear activation function
