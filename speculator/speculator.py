@@ -10,7 +10,7 @@ class Speculator(torch.nn.Module):
     SPECULATOR model
     """
 
-    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, log_spectrum_shift=None, log_spectrum_scale=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), restore=False, restore_filename=None):
+    def __init__(self, n_parameters=None, wavelengths=None, pca_transform_matrix=None, parameters_shift=None, parameters_scale=None, pca_shift=None, pca_scale=None, log_spectrum_shift=None, log_spectrum_scale=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), restore=False, restore_filename=None, device="cpu"):
 
         """
         Constructor.
@@ -44,19 +44,19 @@ class Speculator(torch.nn.Module):
         # shifts and scales and transform matrix
 
         # input parameters shift and scale
-        self.parameters_shift = torch.tensor(parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters), dtype=torch.float32)
-        self.parameters_scale = torch.tensor(parameters_scale if parameters_scale is not None else np.ones(self.n_parameters), dtype=torch.float32)
+        self.parameters_shift = torch.tensor(parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters), dtype=torch.float32).to(device)
+        self.parameters_scale = torch.tensor(parameters_scale if parameters_scale is not None else np.ones(self.n_parameters), dtype=torch.float32).to(device)
 
         # PCA shift and scale
-        self.pca_shift = torch.tensor(pca_shift if pca_shift is not None else np.zeros(self.n_pcas), dtype=torch.float32)
-        self.pca_scale = torch.tensor(pca_scale if pca_scale is not None else np.ones(self.n_pcas), dtype=torch.float32)
+        self.pca_shift = torch.tensor(pca_shift if pca_shift is not None else np.zeros(self.n_pcas), dtype=torch.float32).to(device)
+        self.pca_scale = torch.tensor(pca_scale if pca_scale is not None else np.ones(self.n_pcas), dtype=torch.float32).to(device)
 
         # spectrum shift and scale
-        self.log_spectrum_shift = torch.tensor(log_spectrum_shift if log_spectrum_shift is not None else np.zeros(self.n_wavelengths), dtype=torch.float32)
-        self.log_spectrum_scale = torch.tensor(log_spectrum_scale if log_spectrum_scale is not None else np.ones(self.n_wavelengths), dtype=torch.float32)
+        self.log_spectrum_shift = torch.tensor(log_spectrum_shift if log_spectrum_shift is not None else np.zeros(self.n_wavelengths), dtype=torch.float32).to(device)
+        self.log_spectrum_scale = torch.tensor(log_spectrum_scale if log_spectrum_scale is not None else np.ones(self.n_wavelengths), dtype=torch.float32).to(device)
 
         # pca transform matrix
-        self.pca_transform_matrix = torch.tensor(pca_transform_matrix, dtype=torch.float32)
+        self.pca_transform_matrix = torch.tensor(pca_transform_matrix, dtype=torch.float32).to(device)
 
         # trainable variables...
 
@@ -66,18 +66,43 @@ class Speculator(torch.nn.Module):
         self.alphas = []
         self.betas = []
         for i in range(self.n_layers):
-            self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ) )
-            self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))))
+            self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ).to(device) )
+            self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))).to(device))
         for i in range(self.n_layers-1):
-            self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
-            self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
+            self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))).to(device))
+            self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))).to(device))
 
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
+        
         # optimizer
-        #self.optimizer = optimizer(self.parameters())
+        self.optimizer = optimizer(self.params)
 
         if restore:
             self.load_state_dict(torch.load(restore_filename))
+
+    # change the device we're on
+    def set_device(self, device):
+
+        self.parameters_shift = self.parameters_shift.to(device)
+        self.parameters_scale = self.parameters_scale.to(device)
+
+        self.pca_shift = self.pca_shift.to(device)
+        self.pca_scale = self.pca_scale.to(device)
+
+        self.log_spectrum_shift = self.log_spectrum_shift.to(device)
+        self.log_spectrum_scale = self.log_spectrum_scale.to(device)
+
+        self.pca_transform_matrix = self.pca_transform_matrix.to(device)
+
+        for i in range(self.n_layers):
+            self.W[i] = self.W[i].to(device)
+            self.b[i] = self.b[i].to(device)
+        for i in range(self.n_layers-1):
+            self.alphas[i] = self.alphas[i].to(device)
+            self.betas[i] = self.betas[i].to(device)
+
+        self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
+        self.optimizer = optimizer(self.params)
 
     # non-linear activation function
     def activation(self, x, alpha, beta):
@@ -101,6 +126,7 @@ class Speculator(torch.nn.Module):
 
         return output
 
+    # save the state dict
     def save(self, filename):
         torch.save(self.state_dict(), filename)
 
@@ -322,7 +348,7 @@ class Photulator(torch.nn.Module):
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3)):
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), device='cpu'):
 
         """
         Constructor.
@@ -355,12 +381,12 @@ class Photulator(torch.nn.Module):
         # shifts and scales and transform matrix into tensorflow constants...
 
         # input parameters shift and scale
-        self.parameters_shift = torch.tensor(parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters), dtype=torch.float32)
-        self.parameters_scale = torch.tensor(parameters_scale if parameters_scale is not None else np.ones(self.n_parameters), dtype=torch.float32)
+        self.parameters_shift = torch.tensor(parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters), dtype=torch.float32).to(device)
+        self.parameters_scale = torch.tensor(parameters_scale if parameters_scale is not None else np.ones(self.n_parameters), dtype=torch.float32).to(device)
 
         # spectrum shift and scale
-        self.magnitudes_shift = torch.tensor(magnitudes_shift if magnitudes_shift is not None else np.zeros(self.n_filters), dtype=torch.float32)
-        self.magnitudes_scale = torch.tensor(magnitudes_scale if magnitudes_scale is not None else np.ones(self.n_filters), dtype=torch.float32)
+        self.magnitudes_shift = torch.tensor(magnitudes_shift if magnitudes_shift is not None else np.zeros(self.n_filters), dtype=torch.float32).to(device)
+        self.magnitudes_scale = torch.tensor(magnitudes_scale if magnitudes_scale is not None else np.ones(self.n_filters), dtype=torch.float32).to(device)
 
         # trainable variables...
 
@@ -370,15 +396,35 @@ class Photulator(torch.nn.Module):
         self.alphas = []
         self.betas = []
         for i in range(self.n_layers):
-            self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ) )
-            self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))))
+            self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ).to(device) )
+            self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))).to(device))
         for i in range(self.n_layers-1):
-            self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
-            self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))))
+            self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))).to(device))
+            self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))).to(device))
 
         # optimizer
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
         self.optimizer = optimizer(self.params)
+
+    # change the device we're on
+    def set_device(self, device):
+
+        self.parameters_shift = self.parameters_shift.to(device)
+        self.parameters_scale = self.parameters_scale.to(device)
+
+        self.magnitudes_shift = self.magnitudes_shift.to(device)
+        self.magnitudes_scale = self.magnitudes_scale.to(device)
+
+        for i in range(self.n_layers):
+            self.W[i] = self.W[i].to(device)
+            self.b[i] = self.b[i].to(device)
+        for i in range(self.n_layers-1):
+            self.alphas[i] = self.alphas[i].to(device)
+            self.betas[i] = self.betas[i].to(device)
+
+        self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
+        self.optimizer = optimizer(self.params)
+
 
     # non-linear activation function
     def activation(self, x, alpha, beta):
@@ -455,16 +501,20 @@ class Photulator(torch.nn.Module):
 
 class PhotulatorModelStack:
 
-    def __init__(self, root_dir, filenames):
+    def __init__(self, root_dir, filenames, device="cpu"):
+
+        # how many emulators?
+        self.n_emulators = len(filenames)
 
         # load emulator models
         self.emulators = [torch.load(filename) for filename in filenames]
 
-        # log10 constant
-        self.ln10 = torch.tensor(np.log(10.), dtype=torch.float32)
+        # change device if neccessary
+        for i in range(self.n_emulators):
+            self.emulators[i].set_device(device)
 
-        # how many emulators?
-        self.n_emulators = len(filenames)
+        # log10 constant
+        self.ln10 = torch.tensor(np.log(10.), dtype=torch.float32).to(device)
 
     # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def fluxes(self, theta, N):
@@ -477,9 +527,13 @@ class PhotulatorModelStack:
         return torch.concat([torch.add(self.emulators[i].forward(theta), torch.unsqueeze(N, -1)) for i in range(self.n_emulators)], axis=-1)
 
 
-
 # train photulator model stack
-def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3)):
+def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False):
+
+    # put the training data all on the device if we want it there
+    if all_on_device:
+        training_theta = training_theta.to(device)
+        training_mag = training_mag.to(device)
 
     # architecture
     n_hidden = [n_units]*n_layers
@@ -500,7 +554,8 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                            n_hidden=[n_units]*n_layers,
                            restore=False,
                            restore_filename=None,
-                           optimizer=optimizer).to(device)
+                           optimizer=optimizer,
+                           device=device)
 
         # train using cooling/heating schedule for lr/batch-size
         for i in range(len(lr)):
@@ -555,3 +610,7 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                     if verbose is True:
                         print('Validation loss = ' + str(best_loss))
                     break
+
+        # save CPU version of the model by default
+        photulator.set_device('cpu')
+        torch.save(photulator, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
