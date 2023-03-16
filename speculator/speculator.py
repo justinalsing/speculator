@@ -75,7 +75,8 @@ class Speculator(torch.nn.Module):
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
         
         # optimizer
-        self.optimizer = optimizer(self.params)
+        self.optimizer_constructor = optimizer
+        self.optimizer = self.optimizer_constructor(self.params)
 
         if restore:
             self.load_state_dict(torch.load(restore_filename))
@@ -102,7 +103,7 @@ class Speculator(torch.nn.Module):
             self.betas[i] = self.betas[i].to(device)
 
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-        self.optimizer = optimizer(self.params)
+        self.optimizer = self.optimizer_constructor(self.params)
 
     # non-linear activation function
     def activation(self, x, alpha, beta):
@@ -404,7 +405,9 @@ class Photulator(torch.nn.Module):
 
         # optimizer
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-        self.optimizer = optimizer(self.params)
+
+        self.optimizer_constructor = optimizer
+        self.optimizer = self.optimizer_constructor(self.params)
 
     # change the device we're on
     def set_device(self, device):
@@ -423,7 +426,7 @@ class Photulator(torch.nn.Module):
             self.betas[i] = self.betas[i].to(device)
 
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-        self.optimizer = optimizer(self.params)
+        self.optimizer = self.optimizer_constructor(self.params)
 
 
     # non-linear activation function
