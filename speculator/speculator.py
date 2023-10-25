@@ -572,7 +572,7 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
             # dataset and dataloader
             dataset = TensorDataset(training_theta, torch.unsqueeze(training_mag[:,f],-1))
             training_data, validation_data = torch.utils.data.random_split(dataset, [int(len(dataset)*(1.-validation_split)), len(dataset) - int(len(dataset)*(1.-validation_split))])
-            training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size)
+            training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size[i])
 
             # set up training loss
             training_loss = [np.infty]
