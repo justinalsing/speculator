@@ -555,8 +555,6 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                            magnitudes_shift=magnitudes_shift[f],
                            magnitudes_scale=magnitudes_scale[f],
                            n_hidden=[n_units]*n_layers,
-                           restore=False,
-                           restore_filename=None,
                            optimizer=optimizer,
                            device=device)
 
@@ -568,8 +566,8 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
 
             # set learning rate
             optimizer_state_dict = photulator.optimizer.state_dict()
-            state_dict['param_groups'][0]['lr'] = lr[i]
-            photulator.optimizer.load_state_dict(state_dict)
+            optimizer_state_dict['param_groups'][0]['lr'] = lr[i]
+            photulator.optimizer.load_state_dict(optimizer_state_dict)
 
             # dataset and dataloader
             dataset = TensorDataset(training_theta, torch.unsqueeze(training_mag[:,f],-1))
@@ -584,7 +582,7 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
             patience_counter = 0
 
             # loop over epochs
-            while early_stopping_counter < patience:
+            while patience_counter < patience:
 
                 # loop over batches for a single epoch
                 for theta, mag in training_dataloader:
@@ -603,7 +601,7 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                 # early stopping condition
                 if validation_loss[-1] < best_loss:
                     best_loss = validation_loss[-1]
-                    best_state = self.state_dict()
+                    best_state = photulator.state_dict()
                     patience_counter = 0
                 else:
                     patience_counter += 1
