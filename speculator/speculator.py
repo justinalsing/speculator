@@ -490,7 +490,7 @@ class Photulator(torch.nn.Module):
 	            with torch.set_grad_enabled(True):
 
 	                # loss
-	                loss = self.loss(theta_, mags_) * theta_.shape[0] / theta.shape[0]
+	                loss = self.compute_loss(theta_, mags_) * theta_.shape[0] / theta.shape[0]
 
 	                # backprop
 	                loss.backward()
