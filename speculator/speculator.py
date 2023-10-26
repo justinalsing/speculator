@@ -469,7 +469,7 @@ class Photulator(torch.nn.Module):
     	if theta.shape[0] < maxbatch:
 
     		# loss
-	        loss = self.loss(theta, mags)
+	        loss = self.conpute_loss(theta, mags)
 
 	        # backprop
 	        loss.backward()
