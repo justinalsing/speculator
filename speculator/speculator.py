@@ -79,7 +79,7 @@ class Speculator(torch.nn.Module):
         self.optimizer = self.optimizer_constructor(self.params)
 
         if restore:
-            self.load_state_dict(torch.load(restore_filename))
+            self.load_state_dict(torch.load(restore_filename, map_location=device))
 
     # change the device we're on
     def set_device(self, device):
