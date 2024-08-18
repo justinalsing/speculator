@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 import sys
 import platform
 
-install_requires = ["tqdm>=4.41.1", "numpy", "sklearn", "torch"]
+install_requires = ["tqdm>=4.41.1", "numpy", "scikit-learn", "torch"]
 
 setup(name='speculator',
       version='v0.2',
