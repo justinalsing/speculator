@@ -615,3 +615,33 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
         # save CPU version of the model by default
         photulator.set_device('cpu')
         torch.save(photulator, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
+
+
+# some utility functions
+
+def flux2mag(flux):
+    return -2.5 * torch.log10(flux) + 22.5
+
+def flux2asinhmag(flux, f_b):
+
+    """
+    Computes the asinh magnitudes from fluxes
+
+    flux: torch tensor, should be in units of nanomaggies
+    f_b: flux below which the asinh magnitude is linear, should be in units of nanomaggies
+    f_0: reference flux, default is 1 jansky or 10^9 nanomaggies
+
+    """
+
+    asinh_mag = -1.0857362047581294 * (torch.arcsinh(flux/(2.0 * f_b)) - torch.log(10**9 / f_b))
+
+    return asinh_mag
+
+def mag2asinhmag(mag, f_b):
+    return flux2asinhmag(10**(-0.4 * (mag - 22.5)), f_b)
+
+def asinhmag2mag(asinhmag, f_b):
+
+    return flux2mag( torch.sinh( asinhmag / (-1.0857362047581294) + torch.log(10**9 / f_b) ) * 2.0 * f_b )
+
+
