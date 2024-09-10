@@ -529,6 +529,33 @@ class PhotulatorModelStack:
 
         return torch.concat([torch.add(self.emulators[i].forward(theta), torch.unsqueeze(N, -1)) for i in range(self.n_emulators)], axis=-1)
 
+class LuptulatorModelStack:
+
+    def __init__(self, root_dir, filenames, f_b=None, device="cpu"):
+
+        # how many emulators?
+        self.n_emulators = len(filenames)
+
+        # load emulator models
+        self.emulators = [torch.load(filename) for filename in filenames]
+
+        # luptitude offset
+        self.f_b = f_b.to(device)
+
+        # change device if neccessary
+        for i in range(self.n_emulators):
+            self.emulators[i].set_device(device)
+
+    # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
+    def fluxes(self, theta):
+
+        return asinhmag2flux(self.magnitudes(theta))
+
+    # compute magnitudes given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
+    def magnitudes(self, theta):
+
+        return torch.concat([self.emulators[i].forward(theta) for i in range(self.n_emulators)], axis=-1)
+
 
 # train photulator model stack
 def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False):
@@ -636,6 +663,19 @@ def flux2asinhmag(flux, f_b):
     asinh_mag = -1.0857362047581294 * (torch.arcsinh(flux/(2.0 * f_b)) - torch.log(10**9 / f_b))
 
     return asinh_mag
+
+def asinhmag2flux(asinh_mag, f_b):
+
+    """
+    Computes fluxes (nanomaggies) from asinh magnitudes
+
+    asinh_magnitudes: torch tensor, should be in normal magnitude units
+    f_b: flux below which the asinh magnitude is linear, should be in units of nanomaggies
+    f_0: reference flux, default is 1 jansky or 10^9 nanomaggies
+
+    """
+
+    return torch.sinh(-(asinh_mag / -1.0857362047581294) + torch.log(10**9 / f_b) ) * 2 * f_b 
 
 def mag2asinhmag(mag, f_b):
     return flux2asinhmag(10**(-0.4 * (mag - 22.5)), f_b)
