@@ -556,7 +556,6 @@ class LuptulatorModelStack:
 
         return torch.concat([self.emulators[i].forward(theta) for i in range(self.n_emulators)], axis=-1)
 
-
 # train photulator model stack
 def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False):
 
