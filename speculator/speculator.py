@@ -4,6 +4,7 @@ import pickle
 from sklearn.decomposition import IncrementalPCA
 from torch.utils.data import TensorDataset, Dataset
 from torch.utils.data import DataLoader
+import wandb
 
 class Speculator(torch.nn.Module):
     """
@@ -557,7 +558,7 @@ class LuptulatorModelStack:
         return torch.concat([self.emulators[i].forward(theta) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False):
+def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False, wandb_init=None):
 
     # put the training data all on the device if we want it there
     if all_on_device:
@@ -569,6 +570,9 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
 
     # train each band in turn
     for f in range(len(filters)):
+
+        if wandb_init is not None:
+            wandb.init(name=wandb_init['name'] + '_' + filters[f], project=wandb_init['project'])
 
         if verbose is True:
             print('filter ' + filters[f] + '...')
@@ -599,7 +603,8 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
             dataset = TensorDataset(training_theta, torch.unsqueeze(training_mag[:,f],-1))
             training_data, validation_data = torch.utils.data.random_split(dataset, [int(len(dataset)*(1.-validation_split)), len(dataset) - int(len(dataset)*(1.-validation_split))])
             training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size[i])
-
+            epochs_per_step = 1. / len(training_dataloader)
+            epoch = 0.
             # set up training loss
             training_loss = [np.infty]
             validation_loss = [np.infty]
@@ -620,9 +625,20 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                     # training step
                     loss = photulator.training_step(theta, mag, maxbatch=maxbatch)
 
+                    # increment epoch
+                    epoch += epochs_per_step
+
+                    # update wandb if needed
+                    if wandb_init is not None:
+                        wandb.log({'train_loss':loss, 'epoch':epoch})
+
                 # compute total loss and validation loss
                 validation_theta, validation_mag = validation_data[:]
                 validation_loss.append(photulator.compute_loss(validation_theta, validation_mag).cpu().detach().numpy())
+
+                # update wandb if needed
+                if wandb_init is not None:
+                    wandb.log({'val_loss':loss, 'epoch':epoch})
 
                 # early stopping condition
                 if validation_loss[-1] < best_loss:
@@ -638,10 +654,12 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                         print('Validation loss = ' + str(best_loss))
                     break
 
+            if wandb_init is not None:
+                wandb.finish()
+
         # save CPU version of the model by default
         photulator.set_device('cpu')
         torch.save(photulator, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
-
 
 # some utility functions
 
