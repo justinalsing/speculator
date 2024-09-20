@@ -350,7 +350,7 @@ class Photulator(torch.nn.Module):
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), device='cpu'):
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, f_b=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), device='cpu'):
 
         """
         Constructor.
@@ -406,9 +406,10 @@ class Photulator(torch.nn.Module):
 
         # optimizer
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-        #self.optimizer_constructor = optimizer
-        #self.optimizer = self.optimizer_constructor(self.params)
         self.optimizer = optimizer(self.params)
+
+        # luptitude parameters
+        self.f_b = f_b
 
     # change the device we're on
     def set_device(self, device):
@@ -436,6 +437,7 @@ class Photulator(torch.nn.Module):
         return torch.multiply(torch.add(beta, torch.multiply(torch.sigmoid(torch.multiply(alpha, x)), torch.subtract(1.0, beta)) ), x)
 
     # call: forward pass through the network to predict magnitudes
+    # by default this should predict absolute unit mass magnitudes, in units of nano-maggies
     def forward(self, parameters):
 
         output = torch.divide(torch.subtract(parameters, self.parameters_shift), self.parameters_scale)
@@ -452,25 +454,48 @@ class Photulator(torch.nn.Module):
 
         return output
 
-    # pass inputs through the network to predict spectrum
-    def magnitudes(self, parameters):
+    # compute fluxes in nano maggies
+    def flux(self, parameters, N):
 
-        # call forward pass through network
-        return self.forward(parameters)
+        return torch.exp( torch.multiply(torch.add(torch.multiply(-0.4, self.magnitudes(parameters, N)), 9.), self.ln10) )
+
+    # pass inputs through the network to predict apparent magnitudes (in standard magnitude units)
+    def magnitudes(self, parameters, N):
+
+        return torch.add(self.forward(parameters), torch.unsqueeze(N, -1) if N.dim == 1 else N)
+
+    # pass inputs through the network to predict asinh magnitudes (in standard magnitude units)
+    def luptitudes(self, parameters, N):
+
+        # absolute magnitudes -> flux in nano maggies
+        if self.f_b is not None:
+            return mag2asinhmag(self.magnitudes(parameters, N), self.f_b)
+        else:
+            print('Need to specify luptitude parameter f_b at Photulator init to compute luptitudes.')
 
     ### Infrastructure for network training ###
 
-    def compute_loss(self, theta, mags):
+    def compute_loss(self, theta, N, mags, loss_in='absmag'):
 
-        return torch.sqrt(torch.mean( torch.square(torch.subtract(self.forward(theta), mags)) ))
+        if loss_in == 'absmag':
+
+            return torch.sqrt(torch.mean( torch.square(torch.subtract(self.forward(theta), mags)) ))
+
+        elif loss_in == 'asinhmag':
+
+            return torch.sqrt(torch.mean( torch.square(torch.subtract(self.luptitudes(theta, N), mags)) ))
+
+        else:
+
+            print('Invalid option for loss_in (i.e., what quantity to compute the loss in). Please choose one of: absmag, asinhmag.')
 
 
-    def training_step(self, theta, mags, maxbatch=10000):
+    def training_step(self, theta, N, mags, loss_in='absmag', maxbatch=10000):
 
     	if theta.shape[0] < maxbatch:
 
     		# loss
-	        loss = self.compute_loss(theta, mags)
+	        loss = self.compute_loss(theta, N, mags, loss_in=loss_in)
 
 	        # backprop
 	        loss.backward()
@@ -484,14 +509,14 @@ class Photulator(torch.nn.Module):
     	else:
 
 	    	# create iterable dataset
-        	dataloader = DataLoader(TensorDataset(theta, mags), batch_size=maxbatch)
+        	dataloader = DataLoader(TensorDataset(theta, N, mags), batch_size=maxbatch)
 
 	        # loop over sub batches
-	        for theta_, mags_ in dataloader:
+	        for theta_, N_, mags_ in dataloader:
 	            with torch.set_grad_enabled(True):
 
 	                # loss
-	                loss = self.compute_loss(theta_, mags_) * theta_.shape[0] / theta.shape[0]
+	                loss = self.compute_loss(theta_, N_, mags_, loss_in=loss_in) * theta_.shape[0] / theta.shape[0]
 
 	                # backprop
 	                loss.backward()
@@ -501,7 +526,6 @@ class Photulator(torch.nn.Module):
 	        self.optimizer.zero_grad()
 
 	        return loss
-
 
 class PhotulatorModelStack:
 
@@ -523,46 +547,25 @@ class PhotulatorModelStack:
     # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def fluxes(self, theta, N):
 
-        return torch.concat([torch.exp( torch.multiply(torch.add(torch.multiply(-0.4, torch.add(self.emulators[i].forward(theta), torch.unsqueeze(N, -1))), 9.), self.ln10) ) for i in range(self.n_emulators)], axis=-1)
+        return torch.concat([self.emulators[i].fluxes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
     # compute magnitudes given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def magnitudes(self, theta, N):
 
-        return torch.concat([torch.add(self.emulators[i].forward(theta), torch.unsqueeze(N, -1)) for i in range(self.n_emulators)], axis=-1)
-
-class LuptulatorModelStack:
-
-    def __init__(self, root_dir, filenames, f_b=None, device="cpu"):
-
-        # how many emulators?
-        self.n_emulators = len(filenames)
-
-        # load emulator models
-        self.emulators = [torch.load(filename) for filename in filenames]
-
-        # luptitude offset
-        self.f_b = f_b.to(device)
-
-        # change device if neccessary
-        for i in range(self.n_emulators):
-            self.emulators[i].set_device(device)
-
-    # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
-    def fluxes(self, theta):
-
-        return asinhmag2flux(self.magnitudes(theta))
+        return torch.concat([self.emulators[i].magnitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
     # compute magnitudes given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
-    def magnitudes(self, theta):
+    def luptitudes(self, theta, N):
 
-        return torch.concat([self.emulators[i].forward(theta) for i in range(self.n_emulators)], axis=-1)
+        return torch.concat([self.emulators[i].luptitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False, wandb_init=None):
+def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False, wandb_init=None, loss_in='absmag'):
 
     # put the training data all on the device if we want it there
     if all_on_device:
         training_theta = training_theta.to(device)
+        training_N = training_N.to(device)
         training_mag = training_mag.to(device)
 
     # architecture
@@ -600,11 +603,12 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
             photulator.optimizer.load_state_dict(optimizer_state_dict)
 
             # dataset and dataloader
-            dataset = TensorDataset(training_theta, torch.unsqueeze(training_mag[:,f],-1))
+            dataset = TensorDataset(training_theta, training_N, torch.unsqueeze(training_mag[:,f],-1))
             training_data, validation_data = torch.utils.data.random_split(dataset, [int(len(dataset)*(1.-validation_split)), len(dataset) - int(len(dataset)*(1.-validation_split))])
             training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size[i])
             epochs_per_step = 1. / len(training_dataloader)
             epoch = 0.
+            
             # set up training loss
             training_loss = [np.infty]
             validation_loss = [np.infty]
@@ -616,14 +620,14 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
             while patience_counter < patience:
 
                 # loop over batches for a single epoch
-                for theta, mag in training_dataloader:
+                for theta, N, mag in training_dataloader:
 
                     # move to correct device
                     theta.to(device)
                     mag.to(device)
 
                     # training step
-                    loss = photulator.training_step(theta, mag, maxbatch=maxbatch)
+                    loss = photulator.training_step(theta, N, mag, maxbatch=maxbatch, loss_in=loss_in)
 
                     # increment epoch
                     epoch += epochs_per_step
@@ -633,8 +637,8 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
                         wandb.log({'train_loss':loss, 'epoch':epoch})
 
                 # compute total loss and validation loss
-                validation_theta, validation_mag = validation_data[:]
-                validation_loss.append(photulator.compute_loss(validation_theta, validation_mag).cpu().detach().numpy())
+                validation_theta, validation_N, validation_mag = validation_data[:]
+                validation_loss.append(photulator.compute_loss(validation_theta, validation_N, validation_mag, loss_in=loss_in).cpu().detach().numpy())
 
                 # update wandb if needed
                 if wandb_init is not None:
@@ -661,19 +665,20 @@ def train_photulator_stack(training_theta, training_mag, parameters_shift, param
         photulator.set_device('cpu')
         torch.save(photulator, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
 
-# some utility functions
+# magnitude conversion functions
 
+# flux in nano maggies to apparent magnitudes
 def flux2mag(flux):
     return -2.5 * torch.log10(flux) + 22.5
 
+# flux in nano maggies to asinh magnitudes
 def flux2asinhmag(flux, f_b):
 
     """
     Computes the asinh magnitudes from fluxes
 
-    flux: torch tensor, should be in units of nanomaggies
-    f_b: flux below which the asinh magnitude is linear, should be in units of nanomaggies
-    f_0: reference flux, default is 1 jansky or 10^9 nanomaggies
+    flux: torch tensor, should be in units of nano maggies
+    f_b: flux below which the asinh magnitude is linear, should be in units of nano maggies
 
     """
 
@@ -681,10 +686,11 @@ def flux2asinhmag(flux, f_b):
 
     return asinh_mag
 
+# asinh magnitudes to fluxes in nano maggies
 def asinhmag2flux(asinh_mag, f_b):
 
     """
-    Computes fluxes (nanomaggies) from asinh magnitudes
+    Computes fluxes in nano maggies from asinh magnitudes
 
     asinh_magnitudes: torch tensor, should be in normal magnitude units
     f_b: flux below which the asinh magnitude is linear, should be in units of nanomaggies
@@ -694,9 +700,11 @@ def asinhmag2flux(asinh_mag, f_b):
 
     return torch.sinh(-(asinh_mag / -1.0857362047581294) + torch.log(10**9 / f_b) ) * 2 * f_b 
 
+# magnitudes to asinh magnitudes
 def mag2asinhmag(mag, f_b):
     return flux2asinhmag(10**(-0.4 * (mag - 22.5)), f_b)
 
+# asinh magnitudes to magnitudes
 def asinhmag2mag(asinhmag, f_b):
 
     return flux2mag( torch.sinh( asinhmag / (-1.0857362047581294) + torch.log(10**9 / f_b) ) * 2.0 * f_b )
