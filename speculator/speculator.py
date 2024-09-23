@@ -409,7 +409,8 @@ class Photulator(torch.nn.Module):
         self.optimizer = optimizer(self.params)
 
         # luptitude parameters
-        self.f_b = f_b
+        self.f_b = f_b.to(device)
+        self.ln10 = torch.tensor(np.log(10), dtype=torch.float32).to(device)
 
     # change the device we're on
     def set_device(self, device):
@@ -429,6 +430,8 @@ class Photulator(torch.nn.Module):
 
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
         #self.optimizer = self.optimizer_constructor(self.params)
+        self.f_b = self.f_b.to(device)
+        self.ln10 = self.ln10.to(device)
 
 
     # non-linear activation function
