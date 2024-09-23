@@ -467,9 +467,9 @@ class Photulator(torch.nn.Module):
     # pass inputs through the network to predict asinh magnitudes (in standard magnitude units)
     def luptitudes(self, parameters, N):
 
-        # absolute magnitudes -> flux in nano maggies
+        # absolute magnitudes -> flux in nano maggies -> luptitudes (in mormal magnitude units)
         if self.f_b is not None:
-            return mag2asinhmag(self.magnitudes(parameters, N), self.f_b)
+            return flux2asinhmag(self.flux(parameters, N), self.f_b)
         else:
             print('Need to specify luptitude parameter f_b at Photulator init to compute luptitudes.')
 
@@ -659,8 +659,8 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                         print('Validation loss = ' + str(best_loss))
                     break
 
-            if wandb_init is not None:
-                wandb.finish()
+        if wandb_init is not None:
+            wandb.finish()
 
         # save CPU version of the model by default
         photulator.set_device('cpu')
