@@ -544,9 +544,6 @@ class PhotulatorModelStack:
         for i in range(self.n_emulators):
             self.emulators[i].set_device(device)
 
-        # log10 constant
-        self.ln10 = torch.tensor(np.log(10.), dtype=torch.float32).to(device)
-
     # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def fluxes(self, theta, N):
 
