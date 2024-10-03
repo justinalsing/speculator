@@ -350,7 +350,7 @@ class Photulator(torch.nn.Module):
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, f_b=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), device='cpu'):
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, f_b=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), sigma_init=1e-3, device='cpu'):
 
         """
         Constructor.
@@ -398,11 +398,12 @@ class Photulator(torch.nn.Module):
         self.alphas = []
         self.betas = []
         for i in range(self.n_layers):
-            self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ).to(device) )
-            self.b.append(torch.nn.Parameter( torch.zeros((self.architecture[i+1]))).to(device))
+            #self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ).to(device) )
+            self.W.append(torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i], self.architecture[i+1])) ).to(device) )
+            self.b.append(torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1]))).to(device))
         for i in range(self.n_layers-1):
-            self.alphas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))).to(device))
-            self.betas.append(torch.nn.Parameter(torch.randn((self.architecture[i+1]))).to(device))
+            self.alphas.append(torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]))).to(device))
+            self.betas.append(torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]))).to(device))
 
         # optimizer
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
