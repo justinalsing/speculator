@@ -562,7 +562,7 @@ class PhotulatorModelStack:
         return torch.concat([self.emulators[i].luptitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
+def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', all_on_device=False, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
 
     # put the training data all on the device if we want it there
     if all_on_device:
@@ -590,7 +590,6 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                            magnitudes_shift=magnitudes_shift[f],
                            magnitudes_scale=magnitudes_scale[f],
                            n_hidden=[n_units]*n_layers,
-                           optimizer=optimizer,
                            device=device,
                            f_b=f_b[f],
                            sigma_init=sigma_init)
@@ -605,9 +604,8 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                 print('learning rate = ' + str(lr[i]) + ', batch size = ' + str(batch_size[i]))
 
             # set learning rate
-            optimizer_state_dict = optimizer.state_dict()
-            optimizer_state_dict['param_groups'][0]['lr'] = lr[i]
-            optimizer.load_state_dict(optimizer_state_dict)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr[i]
 
             # dataset and dataloader
             dataset = TensorDataset(training_theta, training_N, torch.unsqueeze(training_mag[:,f],-1))
