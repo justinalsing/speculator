@@ -595,7 +595,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                            sigma_init=sigma_init)
 
         # construct an optimizer
-        optimizer = torch.optim.Adam(photulator.params)
+        optimizer = torch.optim.Adam(photulator.parameters())
 
         # train using cooling/heating schedule for lr/batch-size
         for i in range(len(lr)):
