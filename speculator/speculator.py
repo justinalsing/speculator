@@ -457,10 +457,10 @@ class Photulator(torch.nn.Module):
 
         return output
 
-    # compute fluxes in nano maggies
+    # compute fluxes in maggies
     def flux(self, parameters, N):
 
-        return torch.exp( torch.multiply(torch.add(torch.multiply(-0.4, self.magnitudes(parameters, N)), 9.), self.ln10) )
+        return torch.exp( torch.multiply(torch.multiply(-0.4, self.magnitudes(parameters, N)), self.ln10) )
 
     # pass inputs through the network to predict apparent magnitudes (in standard magnitude units)
     def magnitudes(self, parameters, N):
@@ -472,7 +472,7 @@ class Photulator(torch.nn.Module):
 
         # absolute magnitudes -> flux in nano maggies -> luptitudes (in mormal magnitude units)
         if self.f_b is not None:
-            return flux2asinhmag(self.flux(parameters, N), self.f_b)
+            return flux2asinhmag(self.flux(parameters, N) * 1e9, self.f_b)
         else:
             print('Need to specify luptitude parameter f_b at Photulator init to compute luptitudes.')
 
@@ -497,11 +497,13 @@ class Photulator(torch.nn.Module):
 
     	if theta.shape[0] < maxbatch:
 
-    		# loss
-	        loss = self.compute_loss(theta, N, mags, loss_in=loss_in)
+            with torch.set_grad_enabled(True):
 
-	        # backprop
-	        loss.backward()
+        		# loss
+    	        loss = self.compute_loss(theta, N, mags, loss_in=loss_in)
+
+    	        # backprop
+    	        loss.backward()
 
 	        # update
 	        self.optimizer.step()
