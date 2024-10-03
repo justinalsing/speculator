@@ -563,7 +563,7 @@ class PhotulatorModelStack:
         return torch.concat([self.emulators[i].luptitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False, wandb_init=None, loss_in='absmag', f_b=None):
+def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), all_on_device=False, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
 
     # put the training data all on the device if we want it there
     if all_on_device:
@@ -593,7 +593,8 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                            n_hidden=[n_units]*n_layers,
                            optimizer=optimizer,
                            device=device,
-                           f_b=f_b[f])
+                           f_b=f_b[f],
+                           sigma_init=sigma_init)
 
         # train using cooling/heating schedule for lr/batch-size
         for i in range(len(lr)):
@@ -644,10 +645,6 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                 validation_theta, validation_N, validation_mag = validation_data[:]
                 validation_loss.append(photulator.compute_loss(validation_theta, validation_N, validation_mag, loss_in=loss_in).cpu().detach().numpy())
 
-                # update wandb if needed
-                if wandb_init is not None:
-                    wandb.log({'val_loss':loss, 'epoch':epoch})
-
                 # early stopping condition
                 if validation_loss[-1] < best_loss:
                     best_loss = validation_loss[-1]
@@ -661,6 +658,10 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                     if verbose is True:
                         print('Validation loss = ' + str(best_loss))
                     break
+
+                # update wandb if needed
+                if wandb_init is not None:
+                    wandb.log({'val_loss':validation_loss[-1], 'best_loss':best_loss, 'patience_counter':patience_counter, 'epoch':epoch})
 
         if wandb_init is not None:
             wandb.finish()
