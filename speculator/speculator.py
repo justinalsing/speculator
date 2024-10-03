@@ -495,42 +495,42 @@ class Photulator(torch.nn.Module):
 
     def training_step(self, theta, N, mags, loss_in='absmag', maxbatch=10000):
 
-    	if theta.shape[0] < maxbatch:
+        if theta.shape[0] < maxbatch:
 
             with torch.set_grad_enabled(True):
 
-        		# loss
-    	        loss = self.compute_loss(theta, N, mags, loss_in=loss_in)
+                # loss
+                loss = self.compute_loss(theta, N, mags, loss_in=loss_in)
 
-    	        # backprop
-    	        loss.backward()
+                # backprop
+                loss.backward()
 
-	        # update
-	        self.optimizer.step()
-	        self.optimizer.zero_grad()
+            # update
+            self.optimizer.step()
+            self.optimizer.zero_grad()
 
-	        return loss
+            return loss
 
-    	else:
+        else:
 
-	    	# create iterable dataset
-        	dataloader = DataLoader(TensorDataset(theta, N, mags), batch_size=maxbatch)
+            # create iterable dataset
+            dataloader = DataLoader(TensorDataset(theta, N, mags), batch_size=maxbatch)
 
-	        # loop over sub batches
-	        for theta_, N_, mags_ in dataloader:
-	            with torch.set_grad_enabled(True):
+            # loop over sub batches
+            for theta_, N_, mags_ in dataloader:
+                with torch.set_grad_enabled(True):
 
-	                # loss
-	                loss = self.compute_loss(theta_, N_, mags_, loss_in=loss_in) * theta_.shape[0] / theta.shape[0]
+                    # loss
+                    loss = self.compute_loss(theta_, N_, mags_, loss_in=loss_in) * theta_.shape[0] / theta.shape[0]
 
-	                # backprop
-	                loss.backward()
+                    # backprop
+                    loss.backward()
 
-	        # update parameters
-	        self.optimizer.step()
-	        self.optimizer.zero_grad()
+            # update parameters
+            self.optimizer.step()
+            self.optimizer.zero_grad()
 
-	        return loss
+            return loss
 
 class PhotulatorModelStack:
 
