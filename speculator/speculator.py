@@ -350,7 +350,7 @@ class Photulator(torch.nn.Module):
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, f_b=None, n_hidden=[50,50], optimizer=lambda x: torch.optim.Adam(x, lr=1e-3), sigma_init=1e-3, device='cpu'):
+    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, f_b=None, n_hidden=[50,50], sigma_init=1e-3, device='cpu'):
 
         """
         Constructor.
@@ -407,7 +407,6 @@ class Photulator(torch.nn.Module):
 
         # optimizer
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-        self.optimizer = optimizer(self.params)
 
         # luptitude parameters
         self.f_b = f_b.to(device)
@@ -430,7 +429,7 @@ class Photulator(torch.nn.Module):
             self.betas[i] = self.betas[i].to(device)
 
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-        #self.optimizer = self.optimizer_constructor(self.params)
+
         self.f_b = self.f_b.to(device)
         self.ln10 = self.ln10.to(device)
 
@@ -494,7 +493,7 @@ class Photulator(torch.nn.Module):
             print('Invalid option for loss_in (i.e., what quantity to compute the loss in). Please choose one of: absmag, asinhmag.')
 
 
-    def training_step(self, theta, N, mags, loss_in='absmag', maxbatch=10000):
+    def training_step(self, theta, N, mags, optimizer, loss_in='absmag', maxbatch=10000):
 
         if theta.shape[0] < maxbatch:
 
@@ -507,8 +506,8 @@ class Photulator(torch.nn.Module):
                 loss.backward()
 
             # update
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+            optimizer.step()
+            optimizer.zero_grad()
 
             return loss
 
@@ -528,8 +527,8 @@ class Photulator(torch.nn.Module):
                     loss.backward()
 
             # update parameters
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+            optimizer.step()
+            optimizer.zero_grad()
 
             return loss
 
@@ -596,6 +595,9 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                            f_b=f_b[f],
                            sigma_init=sigma_init)
 
+        # construct an optimizer
+        optimizer = torch.optim.Adam(photulator.params)
+
         # train using cooling/heating schedule for lr/batch-size
         for i in range(len(lr)):
 
@@ -603,13 +605,14 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                 print('learning rate = ' + str(lr[i]) + ', batch size = ' + str(batch_size[i]))
 
             # set learning rate
-            optimizer_state_dict = photulator.optimizer.state_dict()
+            optimizer_state_dict = optimizer.state_dict()
             optimizer_state_dict['param_groups'][0]['lr'] = lr[i]
-            photulator.optimizer.load_state_dict(optimizer_state_dict)
+            optimizer.load_state_dict(optimizer_state_dict)
 
             # dataset and dataloader
             dataset = TensorDataset(training_theta, training_N, torch.unsqueeze(training_mag[:,f],-1))
             training_data, validation_data = torch.utils.data.random_split(dataset, [int(len(dataset)*(1.-validation_split)), len(dataset) - int(len(dataset)*(1.-validation_split))])
+            validation_theta, validation_N, validation_mag = validation_data[:]
             training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size[i])
             epochs_per_step = 1. / len(training_dataloader)
             epoch = 0.
@@ -632,7 +635,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                     mag.to(device)
 
                     # training step
-                    loss = photulator.training_step(theta, N, mag, maxbatch=maxbatch, loss_in=loss_in)
+                    loss = photulator.training_step(theta, N, mag, optimizer, maxbatch=maxbatch, loss_in=loss_in)
 
                     # increment epoch
                     epoch += epochs_per_step
@@ -642,7 +645,6 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                         wandb.log({'train_loss':loss, 'epoch':epoch})
 
                 # compute total loss and validation loss
-                validation_theta, validation_N, validation_mag = validation_data[:]
                 validation_loss.append(photulator.compute_loss(validation_theta, validation_N, validation_mag, loss_in=loss_in).cpu().detach().numpy())
 
                 # early stopping condition
