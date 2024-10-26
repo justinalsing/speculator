@@ -399,11 +399,11 @@ class Photulator(torch.nn.Module):
         self.betas = []
         for i in range(self.n_layers):
             #self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ).to(device) )
-            self.W.append(torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i], self.architecture[i+1])) ).to(device) )
-            self.b.append(torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1]))).to(device))
+            self.W.append(torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i], self.architecture[i+1]), device=device)) )
+            self.b.append(torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1]), device=device)))
         for i in range(self.n_layers-1):
-            self.alphas.append(torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]))).to(device))
-            self.betas.append(torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]))).to(device))
+            self.alphas.append(torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]), device=device)))
+            self.betas.append(torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]), device=device)))
 
         # optimizer
         self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
