@@ -636,7 +636,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
                     # update wandb if needed
                     if wandb_init is not None:
-                        wandb.log({'train_loss':loss.detach().cpu().item()}, step=epoch)
+                        wandb.log({'train_loss':loss.detach().cpu().item(), 'epoch':epoch})
 
                 # compute total loss and validation loss
                 validation_loss.append(photulator.compute_loss(validation_theta, validation_N, validation_mag, loss_in=loss_in).cpu().detach().numpy())
@@ -657,7 +657,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
                 # update wandb if needed
                 if wandb_init is not None:
-                    wandb.log({'val_loss':validation_loss[-1], 'best_loss':best_loss, 'patience_counter':patience_counter}, step=epoch)
+                    wandb.log({'val_loss':validation_loss[-1], 'best_loss':best_loss, 'patience_counter':patience_counter, 'epoch':epoch})
 
         if wandb_init is not None:
             wandb.finish()
