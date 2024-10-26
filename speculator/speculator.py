@@ -562,10 +562,10 @@ class PhotulatorModelStack:
         return torch.concat([self.emulators[i].luptitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cpu', all_on_device=False, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
+def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cuda', all_on_device=False, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
 
     # put the training data all on the device if we want it there
-    if all_on_device:
+    if all_on_device is True:
         training_theta = training_theta.to(device)
         training_N = training_N.to(device)
         training_mag = training_mag.to(device)
@@ -628,10 +628,6 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                 # loop over batches for a single epoch
                 for theta, N, mag in training_dataloader:
 
-                    # move to correct device
-                    theta.to(device)
-                    mag.to(device)
-
                     # training step
                     loss = photulator.training_step(theta, N, mag, optimizer, maxbatch=maxbatch, loss_in=loss_in)
 
@@ -640,7 +636,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
                     # update wandb if needed
                     if wandb_init is not None:
-                        wandb.log({'train_loss':loss.detach().cpu().item(), 'epoch':epoch})
+                        wandb.log({'train_loss':loss.detach().cpu().item()}, step=epoch)
 
                 # compute total loss and validation loss
                 validation_loss.append(photulator.compute_loss(validation_theta, validation_N, validation_mag, loss_in=loss_in).cpu().detach().numpy())
@@ -661,7 +657,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
                 # update wandb if needed
                 if wandb_init is not None:
-                    wandb.log({'val_loss':validation_loss[-1], 'best_loss':best_loss, 'patience_counter':patience_counter, 'epoch':epoch})
+                    wandb.log({'val_loss':validation_loss[-1], 'best_loss':best_loss, 'patience_counter':patience_counter}, step=epoch)
 
         if wandb_init is not None:
             wandb.finish()
