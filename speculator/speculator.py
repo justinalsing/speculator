@@ -364,7 +364,6 @@ class Photulator(torch.nn.Module):
         f_b=None, 
         n_hidden=[50,50], 
         sigma_init=1e-3,
-        transform=None,
         parameter_names=None):
 
         """
@@ -419,12 +418,6 @@ class Photulator(torch.nn.Module):
         self.register_buffer('f_b', f_b)
         self.register_buffer('ln10', torch.tensor(np.log(10), dtype=torch.float32) )
 
-        # parameter transform
-        self.transform = StackTransform([identity_transform for i in range(self.n_parameters)]) if transform is None else transform
-
-    def transform_parameters(self, theta):
-        return torch.transpose(self.transform(torch.transpose(theta, 0, 1)), 0, 1)
-
     # non-linear activation function
     def activation(self, x, alpha, beta):
 
@@ -434,7 +427,7 @@ class Photulator(torch.nn.Module):
     # by default this should predict absolute unit mass magnitudes, in units of nano-maggies
     def forward(self, parameters):
 
-        output = torch.divide(torch.subtract(self.transform_parameters(parameters), self.parameters_shift), self.parameters_scale)
+        output = torch.divide(torch.subtract(parameters, self.parameters_shift), self.parameters_scale)
         for i in range(self.n_layers - 1):
 
             # non-linear activation function
@@ -588,7 +581,7 @@ class PhotulatorModelStack:
         return torch.concat([self.emulators[i].luptitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, parameter_names=None, transform=None, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=100000, maxepochs=500, patience=20, root_dir='', verbose=True, device='cuda', all_on_device=True, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
+def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, parameter_names=None, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=100000, maxepochs=500, patience=20, root_dir='', verbose=True, device='cuda', all_on_device=True, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
 
     # put the training data all on the device if we want it there
     if all_on_device is True:
@@ -622,7 +615,6 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                            device=device,
                            f_b=f_b[f],
                            sigma_init=sigma_init,
-                           transform=transform,
                            parameter_names=parameter_names).to(device)
 
         # construct an optimizer
