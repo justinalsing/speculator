@@ -675,7 +675,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                         wandb.log({'train_loss':loss.detach().cpu().item(), 'epoch':epoch})
 
                 # compute total loss and validation loss
-                validation_loss.append(photulator.compute_loss(validation_theta, validation_N, validation_mag, loss_in=loss_in).cpu().detach().numpy())
+                validation_loss.append(compute_loss(validation_theta, validation_N, validation_mag).cpu().detach().numpy())
 
                 # early stopping condition
                 if validation_loss[-1] < best_loss:
