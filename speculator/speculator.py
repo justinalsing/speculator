@@ -415,7 +415,7 @@ class Photulator(torch.nn.Module):
         self.betas = torch.nn.ParameterList( [ torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]))) for i in range(self.n_layers-1)] )
 
         # luptitude parameters
-        self.register_buffer('f_b', f_b)
+        self.register_buffer('f_b', torch.tensor(0., dtype=torch.float32) if f_b is None else torch.tensor(f_b, dtype=torch.float32) )
         self.register_buffer('ln10', torch.tensor(np.log(10), dtype=torch.float32) )
 
     # non-linear activation function
@@ -612,7 +612,6 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                            magnitudes_shift=magnitudes_shift[f],
                            magnitudes_scale=magnitudes_scale[f],
                            n_hidden=[n_units]*n_layers,
-                           device=device,
                            f_b=f_b[f],
                            sigma_init=sigma_init,
                            parameter_names=parameter_names).to(device)
