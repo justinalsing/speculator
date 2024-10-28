@@ -4,7 +4,12 @@ import pickle
 from sklearn.decomposition import IncrementalPCA
 from torch.utils.data import TensorDataset, Dataset
 from torch.utils.data import DataLoader
+from torch.distributions.transforms import StackTransform, identity_transform
 import wandb
+
+class SqrtTransform(torch.nn.Module):
+    def forward(self, x):
+        return torch.sqrt(x)
 
 class Speculator(torch.nn.Module):
     """
@@ -350,7 +355,17 @@ class Photulator(torch.nn.Module):
     PHOTULATOR model
     """
 
-    def __init__(self, n_parameters=None, filters=None, parameters_shift=None, parameters_scale=None, magnitudes_shift=None, magnitudes_scale=None, f_b=None, n_hidden=[50,50], sigma_init=1e-3, device='cpu'):
+    def __init__(self, n_parameters=None, 
+        filters=None, 
+        parameters_shift=None, 
+        parameters_scale=None, 
+        magnitudes_shift=None, 
+        magnitudes_scale=None, 
+        f_b=None, 
+        n_hidden=[50,50], 
+        sigma_init=1e-3,
+        transform=None,
+        parameter_names=None):
 
         """
         Constructor.
@@ -360,9 +375,10 @@ class Photulator(torch.nn.Module):
         :param parameters_scale: scale for input parameters
         :param magnitudes_shift: shift for the output mags
         :param magnitudes_scale: scale for the output mags
-        :param n_hiddens: list with number of hidden units for each hidden layer
-        :param restore: (bool) whether to restore an previously trained model or not
-        :param restore_filename: filename tag (without suffix) for restoring trained model from file (this will be a pickle file with all of the model attributes and weights)
+        :param n_hidden: list with number of hidden units for each hidden layer
+        :param sigma_init: std dev of weight and bias initization
+        :param transform: StackedTransform for transforming parameters before passing to network
+        :param parameter_names: list of the names of the parameters that the model expects as inputs when calling it
         """
 
         # super
@@ -373,6 +389,7 @@ class Photulator(torch.nn.Module):
         self.n_hidden = n_hidden
         self.filters = filters
         self.n_filters = len(filters)
+        self.parameter_names = parameter_names
 
         # architecture
         self.architecture = [self.n_parameters] + self.n_hidden + [self.n_filters]
@@ -383,56 +400,30 @@ class Photulator(torch.nn.Module):
         # shifts and scales and transform matrix into tensorflow constants...
 
         # input parameters shift and scale
-        self.parameters_shift = torch.tensor(parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters), dtype=torch.float32).to(device)
-        self.parameters_scale = torch.tensor(parameters_scale if parameters_scale is not None else np.ones(self.n_parameters), dtype=torch.float32).to(device)
+        self.register_buffer('parameters_shift', torch.tensor(parameters_shift if parameters_shift is not None else np.zeros(self.n_parameters), dtype=torch.float32))
+        self.register_buffer('parameters_scale', torch.tensor(parameters_scale if parameters_scale is not None else np.ones(self.n_parameters), dtype=torch.float32))
 
         # spectrum shift and scale
-        self.magnitudes_shift = torch.tensor(magnitudes_shift if magnitudes_shift is not None else np.zeros(self.n_filters), dtype=torch.float32).to(device)
-        self.magnitudes_scale = torch.tensor(magnitudes_scale if magnitudes_scale is not None else np.ones(self.n_filters), dtype=torch.float32).to(device)
+        self.register_buffer('magnitudes_shift', torch.tensor(magnitudes_shift if magnitudes_shift is not None else np.zeros(self.n_filters), dtype=torch.float32))
+        self.register_buffer('magnitudes_scale', torch.tensor(magnitudes_scale if magnitudes_scale is not None else np.ones(self.n_filters), dtype=torch.float32))
 
         # trainable variables...
 
         # weights, biases and activation function parameters for each layer of the network
-        self.W = []
-        self.b = []
-        self.alphas = []
-        self.betas = []
-        for i in range(self.n_layers):
-            #self.W.append(torch.nn.Parameter( torch.sqrt(torch.tensor(2. / self.n_parameters)) * torch.randn((self.architecture[i], self.architecture[i+1])) ).to(device) )
-            self.W.append(torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i], self.architecture[i+1]), device=device)) )
-            self.b.append(torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1]), device=device)))
-        for i in range(self.n_layers-1):
-            self.alphas.append(torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]), device=device)))
-            self.betas.append(torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]), device=device)))
-
-        # optimizer
-        self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
+        self.W = torch.nn.ParameterList( [ torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i], self.architecture[i+1])) ) for i in range(self.n_layers)] )
+        self.b = torch.nn.ParameterList( [ torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1])) ) for i in range(self.n_layers)] )
+        self.alphas = torch.nn.ParameterList( [ torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1])) ) for i in range(self.n_layers-1)] )
+        self.betas = torch.nn.ParameterList( [ torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]))) for i in range(self.n_layers-1)] )
 
         # luptitude parameters
-        self.f_b = f_b.to(device)
-        self.ln10 = torch.tensor(np.log(10), dtype=torch.float32).to(device)
+        self.register_buffer('f_b', f_b)
+        self.register_buffer('ln10', torch.tensor(np.log(10), dtype=torch.float32) )
 
-    # change the device we're on
-    def set_device(self, device):
+        # parameter transform
+        self.transform = StackTransform([identity_transform for i in range(self.n_parameters)]) if transform is None else transform
 
-        self.parameters_shift = self.parameters_shift.to(device)
-        self.parameters_scale = self.parameters_scale.to(device)
-
-        self.magnitudes_shift = self.magnitudes_shift.to(device)
-        self.magnitudes_scale = self.magnitudes_scale.to(device)
-
-        for i in range(self.n_layers):
-            self.W[i] = self.W[i].to(device)
-            self.b[i] = self.b[i].to(device)
-        for i in range(self.n_layers-1):
-            self.alphas[i] = self.alphas[i].to(device)
-            self.betas[i] = self.betas[i].to(device)
-
-        self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
-
-        self.f_b = self.f_b.to(device)
-        self.ln10 = self.ln10.to(device)
-
+    def transform_parameters(self, theta):
+        return torch.transpose(self.transform(torch.transpose(theta, 0, 1)), 0, 1)
 
     # non-linear activation function
     def activation(self, x, alpha, beta):
@@ -443,7 +434,7 @@ class Photulator(torch.nn.Module):
     # by default this should predict absolute unit mass magnitudes, in units of nano-maggies
     def forward(self, parameters):
 
-        output = torch.divide(torch.subtract(parameters, self.parameters_shift), self.parameters_scale)
+        output = torch.divide(torch.subtract(self.transform_parameters(parameters), self.parameters_shift), self.parameters_scale)
         for i in range(self.n_layers - 1):
 
             # non-linear activation function
@@ -465,7 +456,7 @@ class Photulator(torch.nn.Module):
     # pass inputs through the network to predict apparent magnitudes (in standard magnitude units)
     def magnitudes(self, parameters, N):
 
-        return torch.add(self.forward(parameters), torch.unsqueeze(N, -1) if N.dim == 1 else N)
+        return torch.add(self.forward(parameters), N)
 
     # pass inputs through the network to predict asinh magnitudes (in standard magnitude units)
     def luptitudes(self, parameters, N):
@@ -478,59 +469,98 @@ class Photulator(torch.nn.Module):
 
     ### Infrastructure for network training ###
 
-    def compute_loss(self, theta, N, mags, loss_in='absmag'):
+    def compute_loss_absolute_magnitudes(self, theta, N, mags):
 
-        if loss_in == 'absmag':
+        return torch.sqrt(torch.mean( torch.square(torch.subtract(self.forward(theta), mags)) ))
 
-            return torch.sqrt(torch.mean( torch.square(torch.subtract(self.forward(theta), mags)) ))
+    def compute_loss_luptitudes(self, theta, N, mags):
 
-        elif loss_in == 'asinhmag':
-
-            return torch.sqrt(torch.mean( torch.square(torch.subtract(self.luptitudes(theta, N), mags)) ))
-
-        else:
-
-            print('Invalid option for loss_in (i.e., what quantity to compute the loss in). Please choose one of: absmag, asinhmag.')
+        return torch.sqrt(torch.mean( torch.square(torch.subtract(self.luptitudes(theta, N), mags)) ))
 
 
-    def training_step(self, theta, N, mags, optimizer, loss_in='absmag', maxbatch=10000):
+    def training_step_absolute_magnitudes(self, theta, N, mags, optimizer):
 
-        if theta.shape[0] < maxbatch:
+        # zero the gradients first
+        optimizer.zero_grad()
 
+        with torch.set_grad_enabled(True):
+
+            # loss
+            loss = self.compute_loss_absolute_magnitudes(theta, N, mags)
+
+            # backprop
+            loss.backward()
+
+        # update
+        optimizer.step()
+
+        return loss
+
+
+    def training_step_absolute_magnitudes_accumulated(self, theta, N, mags, optimizer, maxbatch=10000):
+
+        # zero the gradients first
+        optimizer.zero_grad()
+
+        # create iterable dataset
+        dataloader = DataLoader(TensorDataset(theta, N, mags), batch_size=maxbatch)
+
+        # loop over sub batches
+        for theta_, N_, mags_ in dataloader:
             with torch.set_grad_enabled(True):
 
                 # loss
-                loss = self.compute_loss(theta, N, mags, loss_in=loss_in)
+                loss = self.compute_loss_absolute_magnitudes(theta_, N_, mags_) * torch.true_divide(theta_.shape[0], theta.shape[0])
 
                 # backprop
                 loss.backward()
 
-            # update
-            optimizer.step()
-            optimizer.zero_grad()
+        # update parameters
+        optimizer.step()
 
-            return loss
+        return loss
 
-        else:
+    def training_step_luptitudes(self, theta, N, mags, optimizer):
 
-            # create iterable dataset
-            dataloader = DataLoader(TensorDataset(theta, N, mags), batch_size=maxbatch)
+        # zero the gradients first
+        optimizer.zero_grad()
 
-            # loop over sub batches
-            for theta_, N_, mags_ in dataloader:
-                with torch.set_grad_enabled(True):
+        with torch.set_grad_enabled(True):
 
-                    # loss
-                    loss = self.compute_loss(theta_, N_, mags_, loss_in=loss_in) * theta_.shape[0] / theta.shape[0]
+            # loss
+            loss = self.compute_loss_luptitudes(theta, N, mags)
 
-                    # backprop
-                    loss.backward()
+            # backprop
+            loss.backward()
 
-            # update parameters
-            optimizer.step()
-            optimizer.zero_grad()
+        # update
+        optimizer.step()
 
-            return loss
+        return loss
+
+
+    def training_step_luptitudes_accumulated(self, theta, N, mags, optimizer, maxbatch=10000):
+
+        # zero the gradients first
+        optimizer.zero_grad()
+
+        # create iterable dataset
+        dataloader = DataLoader(TensorDataset(theta, N, mags), batch_size=maxbatch)
+
+        # loop over sub batches
+        for theta_, N_, mags_ in dataloader:
+            with torch.set_grad_enabled(True):
+
+                # loss
+                loss = self.compute_loss_luptitudes(theta_, N_, mags_) * torch.true_divide(theta_.shape[0], theta.shape[0])
+
+                # backprop
+                loss.backward()
+
+        # update parameters
+        optimizer.step()
+
+        return loss
 
 class PhotulatorModelStack:
 
@@ -540,11 +570,7 @@ class PhotulatorModelStack:
         self.n_emulators = len(filenames)
 
         # load emulator models
-        self.emulators = [torch.load(filename) for filename in filenames]
-
-        # change device if neccessary
-        for i in range(self.n_emulators):
-            self.emulators[i].set_device(device)
+        self.emulators = [torch.load(filename).to(device) for filename in filenames]
 
     # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def fluxes(self, theta, N):
@@ -562,7 +588,7 @@ class PhotulatorModelStack:
         return torch.concat([self.emulators[i].luptitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=10000, epochs=1000, patience=20, root_dir='', verbose=True, device='cuda', all_on_device=False, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
+def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, parameter_names=None, transform=None, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=100000, maxepochs=500, patience=20, root_dir='', verbose=True, device='cuda', all_on_device=True, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
 
     # put the training data all on the device if we want it there
     if all_on_device is True:
@@ -572,6 +598,9 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
     # architecture
     n_hidden = [n_units]*n_layers
+
+    # how many training rounds to do?
+    rounds = len(lr)
 
     # train each band in turn
     for f in range(len(filters)):
@@ -592,13 +621,15 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                            n_hidden=[n_units]*n_layers,
                            device=device,
                            f_b=f_b[f],
-                           sigma_init=sigma_init)
+                           sigma_init=sigma_init,
+                           transform=transform,
+                           parameter_names=parameter_names).to(device)
 
         # construct an optimizer
         optimizer = torch.optim.Adam(photulator.parameters())
 
         # train using cooling/heating schedule for lr/batch-size
-        for i in range(len(lr)):
+        for i in range(rounds):
 
             if verbose is True:
                 print('learning rate = ' + str(lr[i]) + ', batch size = ' + str(batch_size[i]))
@@ -622,14 +653,26 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             best_state = photulator.state_dict()
             patience_counter = 0
 
+            # which training step to use?
+            if loss_in == 'absmag':
+                if batch_size < maxbatch:
+                    training_step = lambda theta, N, mag: photulator.training_step_absolute_magnitudes(theta, N, mag)
+                else:
+                    training_step = lambda theta, N, mag: photulator.training_step_absolute_magnitudes_accumulated(theta, N, mag, maxbatch=maxbatch)
+            elif loss_in == 'asinhmag':
+                if batch_size < maxbatch:
+                    training_step = lambda theta, N, mag: photulator.training_step_luptitudes(theta, N, mag)
+                else:
+                    training_step = lambda theta, N, mag: photulator.training_step_luptitudes_accumulated(theta, N, mag, maxbatch=maxbatch)
+
             # loop over epochs
-            while patience_counter < patience:
+            while patience_counter < patience and epoch < maxepochs:
 
                 # loop over batches for a single epoch
                 for theta, N, mag in training_dataloader:
 
                     # training step
-                    loss = photulator.training_step(theta, N, mag, optimizer, maxbatch=maxbatch, loss_in=loss_in)
+                    loss = training_step(theta, N, mag, optimizer)
 
                     # increment epoch
                     epoch += epochs_per_step
