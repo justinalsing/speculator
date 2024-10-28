@@ -646,13 +646,15 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
             # which training step to use?
             if loss_in == 'absmag':
+                compute_loss = lambda theta, N, mag: photulator.compute_loss_absolute_magnitudes(theta, N, mag)
                 if batch_size[i] < maxbatch:
                     training_step = lambda theta, N, mag, optimizer: photulator.training_step_absolute_magnitudes(theta, N, mag, optimizer)
                 else:
                     training_step = lambda theta, N, mag, optimizer: photulator.training_step_absolute_magnitudes_accumulated(theta, N, mag, optimizer, maxbatch=maxbatch)
             elif loss_in == 'asinhmag':
+                compute_loss = lambda theta, N, mag: photulator.compute_loss_luptitudes(theta, N, mag)
                 if batch_size[i] < maxbatch:
-                    training_step = lambda theta, N, mag, optimizer: photulator.training_step_luptitudes(theta, N, mag)
+                    training_step = lambda theta, N, mag, optimizer: photulator.training_step_luptitudes(theta, N, mag, optimizer)
                 else:
                     training_step = lambda theta, N, mag, optimizer: photulator.training_step_luptitudes_accumulated(theta, N, mag, optimizer, maxbatch=maxbatch)
 
