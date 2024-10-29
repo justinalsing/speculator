@@ -674,8 +674,34 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                 # loop over batches for a single epoch
                 for theta, N, mag in training_dataloader:
 
-                    # training step
-                    loss = training_step(theta.to(device, non_blocking=True), N.to(device, non_blocking=True), mag.to(device, non_blocking=True), optimizer)
+                    # training step..
+
+                    # zero gradients
+                    optimizer.zero_grad()
+
+                    # backprop and step
+                    if theta.shape[0] < maxbatch:
+                        loss = compute_loss(theta.to(device, non_blocking=True), N.to(device, non_blocking=True), mag.to(device, non_blocking=True))
+                        loss.backward()
+                        optimizer.step()
+                    else:
+                        # create iterable dataset
+                        minidataloader = DataLoader(TensorDataset(theta, N, mags), batch_size=maxbatch)
+
+                        # loop over sub batches
+                        for theta_, N_, mags_ in minidataloader:
+                            with torch.set_grad_enabled(True):
+
+                                # loss
+                                loss = compute_loss(theta_.to(device, non_blocking=True), N_.to(device, non_blocking=True), mags_.to(device, non_blocking=True)) * torch.true_divide(theta_.shape[0], theta.shape[0])
+
+                                # backprop
+                                loss.backward()
+
+                        # update parameters
+                        optimizer.step()
+
+                    #loss = training_step(theta.to(device, non_blocking=True), N.to(device, non_blocking=True), mag.to(device, non_blocking=True), optimizer)
 
                     # increment epoch
                     epoch += epochs_per_step
