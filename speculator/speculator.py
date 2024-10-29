@@ -411,8 +411,8 @@ class Photulator(torch.nn.Module):
         # weights, biases and activation function parameters for each layer of the network
         self.W = torch.nn.ParameterList( [ torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i], self.architecture[i+1])) ) for i in range(self.n_layers)] )
         self.b = torch.nn.ParameterList( [ torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1])) ) for i in range(self.n_layers)] )
-        self.alphas = torch.nn.ParameterList( [ torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1])) ) for i in range(self.n_layers-1)] )
-        self.betas = torch.nn.ParameterList( [ torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]))) for i in range(self.n_layers-1)] )
+        self.alphas = torch.nn.ParameterList( [ torch.nn.Parameter( sigma_init * torch.randn((self.architecture[i+1])) ) for i in range(self.n_layers)] )
+        self.betas = torch.nn.ParameterList( [ torch.nn.Parameter(sigma_init * torch.randn((self.architecture[i+1]))) for i in range(self.n_layers)] )
 
         # luptitude parameters
         self.register_buffer('f_b', torch.tensor(0., dtype=torch.float32) if f_b is None else torch.tensor(f_b, dtype=torch.float32) )
@@ -428,14 +428,23 @@ class Photulator(torch.nn.Module):
     # by default this should predict absolute unit mass magnitudes, in units of nano-maggies
     def forward(self, parameters):
 
+        # shift and scale
         output = torch.divide(torch.subtract(parameters, self.parameters_shift), self.parameters_scale)
-        for i in range(self.n_layers - 1):
+
+        # layers
+        #for i in range(self.n_layers - 1):
 
             # non-linear activation function
-            output = self.activation(torch.add(torch.matmul(output, self.W[i]), self.b[i]), self.alphas[i], self.betas[i])
+        #    output = self.activation(torch.add(torch.matmul(output, self.W[i]), self.b[i]), self.alphas[i], self.betas[i])
 
         # linear output layer
-        output = torch.add(torch.matmul(output, self.W[-1]), self.b[-1])
+        #output = torch.add(torch.matmul(output, self.W[-1]), self.b[-1])
+
+        # layers
+        for i, (W, b, alpha, beta) in enumerate(zip(self.W, self.b, self.alphas, self.betas)):
+
+            # non-linear activation function
+            output = self.activation(torch.add(torch.matmul(output, W), b), alpha, beta)
 
         # rescale the output
         output = torch.add(torch.multiply(output, self.magnitudes_scale), self.magnitudes_shift)
