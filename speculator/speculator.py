@@ -605,7 +605,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             print('filter ' + filters[f] + '...')
 
         # construct the PHOTULATOR model
-        photulator = Photulator(n_parameters=training_theta.shape[-1],
+        photulator = torch.jit.script(Photulator(n_parameters=training_theta.shape[-1],
                            filters=[filters[f]],
                            parameters_shift=parameters_shift,
                            parameters_scale=parameters_scale,
@@ -614,7 +614,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                            n_hidden=[n_units]*n_layers,
                            f_b=f_b[f],
                            sigma_init=sigma_init,
-                           parameter_names=parameter_names).to(device)
+                           parameter_names=parameter_names)).to(device)
 
         # construct an optimizer
         optimizer = torch.optim.Adam(photulator.parameters())
@@ -633,7 +633,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             dataset = TensorDataset(training_theta, training_N, torch.unsqueeze(training_mag[:,f],-1))
             training_data, validation_data = torch.utils.data.random_split(dataset, [int(len(dataset)*(1.-validation_split)), len(dataset) - int(len(dataset)*(1.-validation_split))])
             validation_theta, validation_N, validation_mag = validation_data[:]
-            training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size[i])
+            training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size[i], num_workers=4, pin_memory=True)
             epochs_per_step = 1. / len(training_dataloader)
             epoch = 0.
             
@@ -665,7 +665,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                 for theta, N, mag in training_dataloader:
 
                     # training step
-                    loss = training_step(theta, N, mag, optimizer)
+                    loss = training_step(theta.to(device, non_blocking=True), N.to(device, non_blocking=True), mag.to(device, non_blocking=True), optimizer)
 
                     # increment epoch
                     epoch += epochs_per_step
@@ -675,7 +675,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                         wandb.log({'train_loss':loss.detach().cpu().item(), 'epoch':epoch})
 
                 # compute total loss and validation loss
-                validation_loss.append(compute_loss(validation_theta, validation_N, validation_mag).cpu().detach().numpy())
+                validation_loss.append(compute_loss(validation_theta.to(device), validation_N.to(device), validation_mag.to(device)).cpu().detach().numpy())
 
                 # early stopping condition
                 if validation_loss[-1] < best_loss:
@@ -699,7 +699,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             wandb.finish()
 
         # save CPU version of the model by default
-        photulator.set_device('cpu')
+        photulator.to('cpu')
         torch.save(photulator, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
 
 # magnitude conversion functions
