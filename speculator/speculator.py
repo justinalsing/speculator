@@ -452,11 +452,13 @@ class Photulator(torch.nn.Module):
         return output
 
     # compute fluxes in maggies
+    @torch.jit.export
     def flux(self, parameters, N):
 
-        return torch.exp( torch.multiply(torch.multiply(-0.4, self.magnitudes(parameters, N)), self.ln10) )
+        return torch.exp( torch.multiply(torch.multiply(torch.tensor(-0.4, dtype=torch.float32, device=parameters.device), self.magnitudes(parameters, N)), self.ln10) )
 
     # pass inputs through the network to predict apparent magnitudes (in standard magnitude units)
+    @torch.jit.export
     def magnitudes(self, parameters, N):
 
         return torch.add(self.forward(parameters), N)
@@ -464,11 +466,11 @@ class Photulator(torch.nn.Module):
     # pass inputs through the network to predict asinh magnitudes (in standard magnitude units)
     def luptitudes(self, parameters, N):
 
-        # absolute magnitudes -> flux in nano maggies -> luptitudes (in mormal magnitude units)
-        if self.f_b is not None:
-            return flux2asinhmag(self.flux(parameters, N) * 1e9, self.f_b)
-        else:
-            print('Need to specify luptitude parameter f_b at Photulator init to compute luptitudes.')
+        # absolute magnitudes -> flux in nano maggies
+        flux = torch.multiply(self.flux(parameters, N), torch.tensor(1e9, dtype=torch.float32, device=parameters.device))
+
+        # flux in nano maggies -> luptitudes (in mormal magnitude units)
+        return flux2asinhmag(flux, self.f_b)
 
     ### Infrastructure for network training ###
 
@@ -656,17 +658,9 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
             # which training step to use?
             if loss_in == 'absmag':
-                compute_loss = lambda theta, N, mag: photulator.compute_loss_absolute_magnitudes(theta, N, mag)
-                if batch_size[i] < maxbatch:
-                    training_step = lambda theta, N, mag, optimizer: photulator.training_step_absolute_magnitudes(theta, N, mag, optimizer)
-                else:
-                    training_step = lambda theta, N, mag, optimizer: photulator.training_step_absolute_magnitudes_accumulated(theta, N, mag, optimizer, maxbatch=maxbatch)
+                compute_loss = lambda theta, N, mag: torch.sqrt(torch.mean( torch.square(torch.subtract(photulator.forward(theta), mag)) ))
             elif loss_in == 'asinhmag':
-                compute_loss = lambda theta, N, mag: photulator.compute_loss_luptitudes(theta, N, mag)
-                if batch_size[i] < maxbatch:
-                    training_step = lambda theta, N, mag, optimizer: photulator.training_step_luptitudes(theta, N, mag, optimizer)
-                else:
-                    training_step = lambda theta, N, mag, optimizer: photulator.training_step_luptitudes_accumulated(theta, N, mag, optimizer, maxbatch=maxbatch)
+                compute_loss = lambda theta, N, mag: torch.sqrt(torch.mean( torch.square(torch.subtract(flux2asinhmag(photulator.flux(theta) * 1e9, photulator.f_b), mag)) ))
 
             # loop over epochs
             while patience_counter < patience and epoch < maxepochs:
