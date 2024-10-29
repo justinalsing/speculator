@@ -419,9 +419,10 @@ class Photulator(torch.nn.Module):
         self.register_buffer('ln10', torch.tensor(np.log(10), dtype=torch.float32) )
 
     # non-linear activation function
+    @torch.jit.export
     def activation(self, x, alpha, beta):
 
-        return torch.multiply(torch.add(beta, torch.multiply(torch.sigmoid(torch.multiply(alpha, x)), torch.subtract(1.0, beta)) ), x)
+        return torch.multiply(torch.add(beta, torch.multiply(torch.sigmoid(torch.multiply(alpha, x)), torch.subtract(torch.tensor(1.0, dtype=torch.float32, device=beta.device), beta)) ), x)
 
     # call: forward pass through the network to predict magnitudes
     # by default this should predict absolute unit mass magnitudes, in units of nano-maggies
