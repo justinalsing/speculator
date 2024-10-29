@@ -660,7 +660,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             if loss_in == 'absmag':
                 compute_loss = lambda theta, N, mag: torch.sqrt(torch.mean( torch.square(torch.subtract(photulator.forward(theta), mag)) ))
             elif loss_in == 'asinhmag':
-                compute_loss = lambda theta, N, mag: torch.sqrt(torch.mean( torch.square(torch.subtract(flux2asinhmag(photulator.flux(theta) * 1e9, photulator.f_b), mag)) ))
+                compute_loss = lambda theta, N, mag: torch.sqrt(torch.mean( torch.square(torch.subtract(flux2asinhmag(photulator.flux(theta, N) * 1e9, photulator.f_b), mag)) ))
 
             # loop over epochs
             while patience_counter < patience and epoch < maxepochs:
