@@ -680,7 +680,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                         optimizer.step()
                     else:
                         # create iterable dataset
-                        minidataloader = DataLoader(TensorDataset(theta, N, mags), batch_size=maxbatch)
+                        minidataloader = DataLoader(TensorDataset(theta, N, mag), batch_size=maxbatch)
 
                         # loop over sub batches
                         for theta_, N_, mags_ in minidataloader:
