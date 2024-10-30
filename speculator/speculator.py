@@ -717,7 +717,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                 if patience_counter >= patience:
                     photulator.load_state_dict(best_state)
                     photulator.save(root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
-                    torch.save(best_state, root_dir + 'model_{}x{}_state'.format(n_layers, n_units) + filters[f] + '.pt')
+                    torch.save(best_state, root_dir + 'model_{}x{}'.format(n_layers, n_units) + filters[f] + '_state.pt')
                     if verbose is True:
                         print('Validation loss = ' + str(best_loss))
                     break
@@ -730,9 +730,20 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             wandb.finish()
 
         # save CPU version of the model by default
-        photulator.to('cpu')
-        photulator.save(root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
-        torch.save(photulator.state_dict(), root_dir + 'model_{}x{}_state'.format(n_layers, n_units) + filters[f] + '.pt')
+        photulator_cpu = Photulator(n_parameters=training_theta.shape[-1],
+                           filters=[filters[f]],
+                           parameters_shift=parameters_shift,
+                           parameters_scale=parameters_scale,
+                           magnitudes_shift=magnitudes_shift[f],
+                           magnitudes_scale=magnitudes_scale[f],
+                           n_hidden=[n_units]*n_layers,
+                           f_b=f_b[f],
+                           sigma_init=sigma_init,
+                           parameter_names=parameter_names).to('cpu')
+        best_state_cpu = torch.load(root_dir + 'model_{}x{}'.format(n_layers, n_units) + filters[f] + '_state.pt', map_location=torch.device('cpu'))
+        photulator_cpu.load_state_dict(best_state_cpu)
+        torch.save(photulator_cpu, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '_cpu.pt')
+        torch.save(photulator_cpu.state_dict(), root_dir + 'model_{}x{}'.format(n_layers, n_units) + filters[f] + '_state_cpu.pt')
 
 # magnitude conversion functions
 
