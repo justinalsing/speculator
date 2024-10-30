@@ -716,7 +716,8 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                     patience_counter += 1
                 if patience_counter >= patience:
                     photulator.load_state_dict(best_state)
-                    torch.save(photulator, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
+                    photulator.save(root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
+                    torch.save(best_state, root_dir + 'model_{}x{}_state'.format(n_layers, n_units) + filters[f] + '.pt')
                     if verbose is True:
                         print('Validation loss = ' + str(best_loss))
                     break
@@ -730,7 +731,8 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
         # save CPU version of the model by default
         photulator.to('cpu')
-        torch.save(photulator, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
+        photulator.save(root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '.pt')
+        torch.save(photulator.state_dict(), root_dir + 'model_{}x{}_state'.format(n_layers, n_units) + filters[f] + '.pt')
 
 # magnitude conversion functions
 
