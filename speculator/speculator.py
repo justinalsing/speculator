@@ -705,7 +705,7 @@ class PhotulatorModelStack:
         return torch.concat([self.emulators[i].luptitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, parameter_names=None, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=100000, maxepochs=500, patience=20, root_dir='', verbose=True, device='cuda', all_on_device=True, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2):
+def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, parameter_names=None, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=100000, maxepochs=500, patience=20, root_dir='', verbose=True, device='cuda', all_on_device=True, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2, activation='alsing20'):
 
     # put the training data all on the device if we want it there
     if all_on_device is True:
@@ -729,16 +729,33 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             print('filter ' + filters[f] + '...')
 
         # construct the PHOTULATOR model
-        photulator = torch.jit.script(Photulator(n_parameters=training_theta.shape[-1],
-                           filters=[filters[f]],
-                           parameters_shift=parameters_shift,
-                           parameters_scale=parameters_scale,
-                           magnitudes_shift=magnitudes_shift[f],
-                           magnitudes_scale=magnitudes_scale[f],
-                           n_hidden=[n_units]*n_layers,
-                           f_b=f_b[f],
-                           sigma_init=sigma_init,
-                           parameter_names=parameter_names)).to(device)
+        if activation == 'alsing20':
+            photulator = torch.jit.script(Photulator(n_parameters=training_theta.shape[-1],
+                               filters=[filters[f]],
+                               parameters_shift=parameters_shift,
+                               parameters_scale=parameters_scale,
+                               magnitudes_shift=magnitudes_shift[f],
+                               magnitudes_scale=magnitudes_scale[f],
+                               n_hidden=[n_units]*n_layers,
+                               f_b=f_b[f],
+                               sigma_init=sigma_init,
+                               parameter_names=parameter_names)).to(device)
+        else:
+            activation_functions = {'tanh':torch.nn.Tanh, 'silu':torch.nn.SiLU, 'leakyrelu':torch.nn.LeakyReLU}
+            photulator = torch.jit.script(PhotulatorBasic(n_parameters=training_theta.shape[-1],
+                               filters=[filters[f]],
+                               parameters_shift=parameters_shift,
+                               parameters_scale=parameters_scale,
+                               magnitudes_shift=magnitudes_shift[f],
+                               magnitudes_scale=magnitudes_scale[f],
+                               n_hidden=[n_units]*n_layers,
+                               f_b=f_b[f],
+                               sigma_init=sigma_init,
+                               parameter_names=parameter_names,
+                               activation=activation_functions[activation])).to(device)
+
+        # location for saving the model
+        save_location = root_dir + 'model_{}x{}_{}_'.format(n_layers, n_units, activation) + filters[f]
 
         # construct an optimizer
         optimizer = torch.optim.Adam(photulator.parameters())
@@ -830,8 +847,8 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                     patience_counter += 1
                 if patience_counter >= patience:
                     photulator.load_state_dict(best_state)
-                    photulator.save(root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '_jit.pt')
-                    torch.save(best_state, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '_state.pt')
+                    photulator.save(save_location + '_jit.pt')
+                    torch.save(best_state, save_location + '_state.pt')
                     if verbose is True:
                         print('Validation loss = ' + str(best_loss))
                     break
@@ -844,24 +861,37 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             wandb.finish()
 
         # save CPU and GPU versions of the model
-        photulator_cpu = Photulator(n_parameters=training_theta.shape[-1],
-                           filters=[filters[f]],
-                           parameters_shift=parameters_shift,
-                           parameters_scale=parameters_scale,
-                           magnitudes_shift=magnitudes_shift[f],
-                           magnitudes_scale=magnitudes_scale[f],
-                           n_hidden=[n_units]*n_layers,
-                           f_b=f_b[f],
-                           sigma_init=sigma_init,
-                           parameter_names=parameter_names).to('cpu')
-        best_state_cpu = torch.load(root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '_state.pt', map_location=torch.device('cpu'))
+        if activation == 'alsing20':
+            photulator_cpu = Photulator(n_parameters=training_theta.shape[-1],
+                               filters=[filters[f]],
+                               parameters_shift=parameters_shift,
+                               parameters_scale=parameters_scale,
+                               magnitudes_shift=magnitudes_shift[f],
+                               magnitudes_scale=magnitudes_scale[f],
+                               n_hidden=[n_units]*n_layers,
+                               f_b=f_b[f],
+                               sigma_init=sigma_init,
+                               parameter_names=parameter_names).to('cpu')
+        else:
+            photulator_cpu = PhotulatorBasic(n_parameters=training_theta.shape[-1],
+                               filters=[filters[f]],
+                               parameters_shift=parameters_shift,
+                               parameters_scale=parameters_scale,
+                               magnitudes_shift=magnitudes_shift[f],
+                               magnitudes_scale=magnitudes_scale[f],
+                               n_hidden=[n_units]*n_layers,
+                               f_b=f_b[f],
+                               sigma_init=sigma_init,
+                               parameter_names=parameter_names,
+                               activation=activation_functions[activation]).to('cpu')            
+        best_state_cpu = torch.load(save_location + '_state.pt', map_location=torch.device('cpu'))
         photulator_cpu.load_state_dict(best_state_cpu)
-        torch.save(photulator_cpu, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '_cpu.pt')
-        torch.save(photulator_cpu.state_dict(), root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '_state_cpu.pt')
+        torch.save(photulator_cpu, save_location + '_cpu.pt')
+        torch.save(photulator_cpu.state_dict(), save_location + '_state_cpu.pt')
 
         photulator_gpu = photulator_cpu.to('cuda')
-        torch.save(photulator_gpu, root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '_gpu.pt')
-        torch.save(photulator_gpu.state_dict(), root_dir + 'model_{}x{}_'.format(n_layers, n_units) + filters[f] + '_state_gpu.pt')
+        torch.save(photulator_gpu, save_location + '_gpu.pt')
+        torch.save(photulator_gpu.state_dict(), save_location + '_state_gpu.pt')
 
 # magnitude conversion functions
 
