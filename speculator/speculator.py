@@ -381,7 +381,7 @@ class PhotulatorBasic(torch.nn.Module):
         """
 
         # super
-        super(Photulator, self).__init__()
+        super(PhotulatorBasic, self).__init__()
 
         # parameters
         self.n_parameters = n_parameters
