@@ -410,18 +410,12 @@ class PhotulatorBasic(torch.nn.Module):
         # network
         self.network = torch.nn.Sequential()
         for layer in range(self.n_layers):
-            self.network.add_module(torch.nn.Linear(self.architecture[layer], self.architecture[layer+1]))
-            self.network.add_module(self.activation())
+            self.network.add_module('layer {}'.format(layer), torch.nn.Linear(self.architecture[layer], self.architecture[layer+1]))
+            self.network.add_module('activation {}'.format(layer), self.activation())
 
         # luptitude parameters
         self.register_buffer('f_b', torch.tensor(0., dtype=torch.float32) if f_b is None else torch.tensor(f_b, dtype=torch.float32) )
         self.register_buffer('ln10', torch.tensor(np.log(10), dtype=torch.float32) )
-
-    # non-linear activation function
-    @torch.jit.export
-    def activation(self, x, alpha, beta):
-
-        return torch.multiply(torch.add(beta, torch.multiply(torch.sigmoid(torch.multiply(alpha, x)), torch.subtract(torch.tensor(1.0, dtype=torch.float32, device=beta.device), beta)) ), x)
 
     # call: forward pass through the network to predict magnitudes
     # by default this should predict absolute unit mass magnitudes
