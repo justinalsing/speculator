@@ -433,19 +433,16 @@ class PhotulatorBasic(torch.nn.Module):
         return output
 
     # compute fluxes in maggies
-    @torch.jit.export
     def flux(self, parameters, N):
 
         return torch.exp( torch.multiply(torch.multiply(torch.tensor(-0.4, dtype=torch.float32, device=parameters.device), self.magnitudes(parameters, N)), self.ln10) )
 
     # pass inputs through the network to predict apparent magnitudes (in standard magnitude units)
-    @torch.jit.export
     def magnitudes(self, parameters, N):
 
         return torch.add(self.forward(parameters), N)
 
     # pass inputs through the network to predict asinh magnitudes (in standard magnitude units)
-    @torch.jit.export
     def luptitudes(self, parameters, N):
 
         # absolute magnitudes -> flux in nano maggies
@@ -524,10 +521,9 @@ class Photulator(torch.nn.Module):
         self.register_buffer('ln10', torch.tensor(np.log(10), dtype=torch.float32) )
 
     # non-linear activation function
-    @torch.jit.export
     def activation(self, x, alpha, beta):
 
-        return torch.multiply(torch.add(beta, torch.multiply(torch.sigmoid(torch.multiply(alpha, x)), torch.subtract(torch.tensor(1.0, dtype=torch.float32, device=beta.device), beta)) ), x)
+        return torch.multiply(torch.add(beta, torch.multiply(torch.sigmoid(torch.multiply(alpha, x)), 1.0 - beta) ), x)
 
     # call: forward pass through the network to predict magnitudes
     # by default this should predict absolute unit mass magnitudes
@@ -557,19 +553,16 @@ class Photulator(torch.nn.Module):
         return output
 
     # compute fluxes in maggies
-    @torch.jit.export
     def flux(self, parameters, N):
 
         return torch.exp( torch.multiply(torch.multiply(torch.tensor(-0.4, dtype=torch.float32, device=parameters.device), self.magnitudes(parameters, N)), self.ln10) )
 
     # pass inputs through the network to predict apparent magnitudes (in standard magnitude units)
-    @torch.jit.export
     def magnitudes(self, parameters, N):
 
         return torch.add(self.forward(parameters), N)
 
     # pass inputs through the network to predict asinh magnitudes (in standard magnitude units)
-    @torch.jit.export
     def luptitudes(self, parameters, N):
 
         # absolute magnitudes -> flux in nano maggies
@@ -699,13 +692,69 @@ class PhotulatorModelStack:
         return torch.concat([self.emulators[i].luptitudes(theta, N) for i in range(self.n_emulators)], axis=-1)
 
 # train photulator model stack
-def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, parameter_names=None, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5, 1e-6], batch_size=[1000, 10000, 50000, 1000000], maxbatch=100000, maxepochs=500, patience=20, root_dir='', verbose=True, device='cuda', all_on_device=True, wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2, activation='alsing20'):
-
-    # put the training data all on the device if we want it there
-    if all_on_device is True:
-        training_theta = training_theta.to(device)
-        training_N = training_N.to(device)
-        training_mag = training_mag.to(device)
+def train_photulator_stack(training_theta, training_N, training_mag, parameters_shift, parameters_scale, magnitudes_shift, magnitudes_scale, parameter_names=None, n_layers=4, n_units=128, filters=None, validation_split=0.1, lr=[1e-3, 1e-4, 1e-5], batch_size=[1000, 10000, 100000], maxepochs=500, patience=20, root_dir='', verbose=True, device='cuda', wandb_init=None, loss_in='absmag', f_b=None, sigma_init=1e-2, activation='alsing20', cuda_graphs=False):
+    """
+    Trains a Photulator model for astronomical magnitude prediction.
+    
+    Parameters
+    ----------
+    training_theta : torch.Tensor
+        Physical parameters for training samples, shape (n_samples, n_parameters)
+    training_N : torch.Tensor
+        Normalization factors for training samples
+    training_mag : torch.Tensor
+        Magnitude values for training samples, shape (n_samples, n_filters)
+    parameters_shift : torch.Tensor
+        Mean values for parameter normalization
+    parameters_scale : torch.Tensor
+        Standard deviation values for parameter normalization
+    magnitudes_shift : list
+        Mean values for magnitude normalization, one per filter
+    magnitudes_scale : list
+        Standard deviation values for magnitude normalization, one per filter
+    parameter_names : list, optional
+        Names of the physical parameters
+    n_layers : int, default=4
+        Number of hidden layers in the neural network
+    n_units : int, default=128
+        Number of units per hidden layer
+    filters : list, optional
+        List of filter names to train models for
+    validation_split : float, default=0.1
+        Fraction of data to use for validation
+    lr : list, default=[1e-3, 1e-4, 1e-5]
+        Learning rates for each training round
+    batch_size : list, default=[1000, 10000, 100000]
+        Batch sizes for each training round
+    maxepochs : int, default=500
+        Maximum number of epochs to train for
+    patience : int, default=20
+        Number of epochs with no improvement before early stopping
+    root_dir : str, default=''
+        Directory to save trained models
+    verbose : bool, default=True
+        Whether to print progress information
+    device : str, default='cuda'
+        Device to use for training ('cuda' or 'cpu')
+    wandb_init : dict, optional
+        Weights & Biases initialization parameters
+    loss_in : str, default='absmag'
+        Loss function to use ('absmag' or 'asinhmag')
+    f_b : list, optional
+        Softening parameters for asinh magnitudes, one per filter
+    sigma_init : float, default=1e-2
+        Initial value for weight initialization
+    activation : str, default='alsing20'
+        Activation function for neural network layers ('alsing20', 'tanh', 'silu', or 'leakyrelu')
+    cuda_graphs : bool, default=False
+        Whether to use CUDA graphs for optimization
+        
+    Notes
+    -----
+    For lower error rates on the models please use lower learning rates with large batch sizes at the end.
+    """
+    #Set matmuls to high
+    torch.set_float32_matmul_precision('high')
 
     # architecture
     n_hidden = [n_units]*n_layers
@@ -724,7 +773,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
 
         # construct the PHOTULATOR model
         if activation == 'alsing20':
-            photulator = torch.jit.script(Photulator(n_parameters=training_theta.shape[-1],
+            photulator = Photulator(n_parameters=training_theta.shape[-1],
                                filters=[filters[f]],
                                parameters_shift=parameters_shift,
                                parameters_scale=parameters_scale,
@@ -733,10 +782,10 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                                n_hidden=[n_units]*n_layers,
                                f_b=f_b[f],
                                sigma_init=sigma_init,
-                               parameter_names=parameter_names)).to(device)
+                               parameter_names=parameter_names).cuda()
         else:
             activation_functions = {'tanh':torch.nn.Tanh, 'silu':torch.nn.SiLU, 'leakyrelu':torch.nn.LeakyReLU}
-            photulator = torch.jit.script(PhotulatorBasic(n_parameters=training_theta.shape[-1],
+            photulator = PhotulatorBasic(n_parameters=training_theta.shape[-1],
                                filters=[filters[f]],
                                parameters_shift=parameters_shift,
                                parameters_scale=parameters_scale,
@@ -746,11 +795,14 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                                f_b=f_b[f],
                                sigma_init=sigma_init,
                                parameter_names=parameter_names,
-                               activation=activation_functions[activation])).to(device)
-
+                               activation=activation_functions[activation]).cuda()
         # location for saving the model
         save_location = root_dir + 'model_{}x{}_{}_'.format(n_layers, n_units, activation) + filters[f]
-
+        
+        #Compile with reduce-overhead mode and fullgraph for CUDA graphs
+        if cuda_graphs is True:
+            photulator = torch.compile(photulator, mode="reduce-overhead", fullgraph=True)
+        
         # construct an optimizer
         optimizer = torch.optim.Adam(photulator.parameters())
 
@@ -768,14 +820,14 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
             dataset = TensorDataset(training_theta, training_N, torch.unsqueeze(training_mag[:,f],-1))
             training_data, validation_data = torch.utils.data.random_split(dataset, [int(len(dataset)*(1.-validation_split)), len(dataset) - int(len(dataset)*(1.-validation_split))])
             validation_theta, validation_N, validation_mag = validation_data[:]
-            training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size[i], num_workers=4, pin_memory=True)
+            training_dataloader = DataLoader(training_data, shuffle=True, batch_size=batch_size[i], num_workers=8, pin_memory=True, persistent_workers=True)
             epochs_per_step = 1. / len(training_dataloader)
             epoch = 0.
-            
-            # set up training loss
-            training_loss = [np.infty]
-            validation_loss = [np.infty]
-            best_loss = np.infty
+
+             # set up training loss
+            training_loss = [np.inf]
+            validation_loss = [np.inf]
+            best_loss = np.inf
             best_state = photulator.state_dict()
             patience_counter = 0
 
@@ -792,36 +844,14 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                 # loop over batches for a single epoch
                 for theta, N, mag in training_dataloader:
 
-                    # training step..
-
                     # zero gradients
                     optimizer.zero_grad()
 
                     # backprop and step
-
-                    # if the batch is small enough to fit into memory do a standard training step
-                    if theta.shape[0] < maxbatch:
-                        loss = compute_loss(theta.to(device, non_blocking=True), N.to(device, non_blocking=True), mag.to(device, non_blocking=True))
-                        loss.backward()
-                        optimizer.step()
-                    # else split up the batch into mini batches, and accumulate gradients across the minibatches
-                    else:
-                        # create iterable dataset
-                        minidataloader = DataLoader(TensorDataset(theta, N, mag), batch_size=maxbatch)
-
-                        # loop over mini batches, accumulating gradients along the way
-                        for theta_, N_, mags_ in minidataloader:
-                            with torch.set_grad_enabled(True):
-
-                                # loss
-                                loss = compute_loss(theta_.to(device, non_blocking=True), N_.to(device, non_blocking=True), mags_.to(device, non_blocking=True)) * torch.true_divide(theta_.shape[0], theta.shape[0])
-
-                                # backprop
-                                loss.backward()
-
-                        # update parameters
-                        optimizer.step()
-
+                    loss = compute_loss(theta.to(device, non_blocking=True), N.to(device, non_blocking=True), mag.to(device, non_blocking=True))
+                    loss.backward()
+                    optimizer.step()
+                    
                     # increment epoch
                     epoch += epochs_per_step
 
@@ -830,7 +860,7 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                         wandb.log({'train_loss':loss.detach().cpu().item(), 'epoch':epoch})
 
                 # compute total loss and validation loss
-                validation_loss.append(compute_loss(validation_theta.to(device), validation_N.to(device), validation_mag.to(device)).cpu().detach().numpy())
+                validation_loss.append(compute_loss(validation_theta.to(device, non_blocking=True), validation_N.to(device, non_blocking=True), validation_mag.to(device, non_blocking=True)).cpu().detach().numpy())
 
                 # early stopping condition
                 if validation_loss[-1] < best_loss:
@@ -841,7 +871,6 @@ def train_photulator_stack(training_theta, training_N, training_mag, parameters_
                     patience_counter += 1
                 if patience_counter >= patience:
                     photulator.load_state_dict(best_state)
-                    photulator.save(save_location + '_jit.pt')
                     torch.save(best_state, save_location + '_state.pt')
                     if verbose is True:
                         print('Validation loss = ' + str(best_loss))
@@ -930,5 +959,6 @@ def mag2asinhmag(mag, f_b):
 def asinhmag2mag(asinhmag, f_b):
 
     return flux2mag( torch.sinh( asinhmag / (-1.0857362047581294) + torch.log(10**9 / f_b) ) * 2.0 * f_b )
+
 
 
