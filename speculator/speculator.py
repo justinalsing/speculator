@@ -29,7 +29,7 @@ class Speculator(torch.nn.Module):
         log_spectrum_shift=None,
         log_spectrum_scale=None,
         n_hidden=[50, 50],
-        optimizer=lambda x: torch.optim.Adam(x, lr=1e-3),
+        optimizer=None,
         restore=False,
         restore_filename=None,
         device="cpu",
@@ -118,21 +118,28 @@ class Speculator(torch.nn.Module):
         # trainable variables...
 
         # weights, biases and activation function parameters for each layer of the network
-        self.W = []
-        self.b = []
-        self.alphas = []
-        self.betas = []
+        self.W = torch.nn.ParameterList()
+        self.b = torch.nn.ParameterList()
+        self.alphas = torch.nn.ParameterList()
+        self.betas = torch.nn.ParameterList()
         for i in range(self.n_layers):
+            # FIX 1: Correctly apply He weight initialization for each layer
+            # Use self.architecture[i] (current layer's input size) for scaling.
+            input_dim = self.architecture[i]
+            output_dim = self.architecture[i+1]
+            
+            # Weights initialized based on the layer's input dimension
+            std_dev = torch.sqrt(torch.tensor(2.0 / input_dim))
             self.W.append(
-                torch.nn.Parameter(
-                    torch.sqrt(torch.tensor(2.0 / self.n_parameters))
-                    * torch.randn((self.architecture[i], self.architecture[i + 1]))
-                ).to(device)
+                torch.nn.Parameter(std_dev * torch.randn((input_dim, output_dim)))
             )
+            
+            # Biases initialized to zero (as before, which is correct)
             self.b.append(
-                torch.nn.Parameter(torch.zeros((self.architecture[i + 1]))).to(device)
+                torch.nn.Parameter(torch.zeros(output_dim))
             )
         for i in range(self.n_layers - 1):
+            output_dim = self.architecture[i+1]
             self.alphas.append(
                 torch.nn.Parameter(torch.randn((self.architecture[i + 1]))).to(device)
             )
@@ -140,11 +147,15 @@ class Speculator(torch.nn.Module):
                 torch.nn.Parameter(torch.randn((self.architecture[i + 1]))).to(device)
             )
 
-        self.params = torch.nn.ParameterList(self.W + self.b + self.alphas + self.betas)
+        self.to(device)
+        self.params = torch.nn.ParameterList()
+        self.params.extend(self.W)
+        self.params.extend(self.b)
+        self.params.extend(self.alphas)
+        self.params.extend(self.betas)
 
         # optimizer
-        self.optimizer_constructor = optimizer
-        self.optimizer = self.optimizer_constructor(self.params)
+        self.optimizer = torch.optim.Adam(self.params, lr=1e-3)
 
         if restore:
             self.load_state_dict(torch.load(restore_filename, map_location=device))
@@ -164,8 +175,8 @@ class Speculator(torch.nn.Module):
         self.pca_transform_matrix = self.pca_transform_matrix.to(device)
 
         for i in range(self.n_layers):
-            self.W[i] = self.W[i].to(device)
-            self.b[i] = self.b[i].to(device)
+            self.W[i] = torch.nn.Parameter(self.W[i].data.to(device))
+            self.b[i] = torch.nn.Parameter(self.b[i].data.to(device))
         for i in range(self.n_layers - 1):
             self.alphas[i] = self.alphas[i].to(device)
             self.betas[i] = self.betas[i].to(device)
@@ -262,23 +273,22 @@ class Speculator(torch.nn.Module):
     def training_step(
         self, theta, outputs, maxbatch=10000, loss_type="pca", noise_floor=None
     ):
-
+        self.optimizer.zero_grad()
         if theta.shape[0] < maxbatch:
 
             # loss
             if loss_type == "pca":
-                loss = self.compute_loss_pca(theta, outputs)
+                loss = self.compute_loss_pca(outputs, theta)
             elif loss_type == "log_spectra":
-                loss = self.compute_loss_log_spectra(theta, outputs)
+                loss = self.compute_loss_log_spectra(outputs, theta)
             elif loss_type == "spectra":
-                loss = self.compute_loss_spectra(theta, outputs, noise_floor)
+                loss = self.compute_loss_spectra(outputs, theta, noise_floor)
 
             # backprop
             loss.backward()
 
             # update
             self.optimizer.step()
-            self.optimizer.zero_grad()
 
             return loss
 
