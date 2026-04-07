@@ -1056,7 +1056,7 @@ class PhotulatorModelStack:
         self.n_emulators = len(filenames)
 
         # load emulator models
-        self.emulators = [torch.load(filename).to(device) for filename in filenames]
+        self.emulators = [torch.load(filename, weights_only=False).to(device) for filename in filenames]
 
     # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def fluxes(self, theta, N):
