@@ -147,7 +147,7 @@ class Speculator(torch.nn.Module):
         self.optimizer = self.optimizer_constructor(self.params)
 
         if restore:
-            self.load_state_dict(torch.load(restore_filename, map_location=device))
+            self.load_state_dict(torch.load(restore_filename, map_location=device, weights_only=False))
 
     # change the device we're on
     def set_device(self, device):
@@ -1046,7 +1046,7 @@ class PhotulatorModelStack:
         self.n_emulators = len(filenames)
 
         # load emulator models
-        self.emulators = [torch.load(filename).to(device) for filename in filenames]
+        self.emulators = [torch.load(filename, weights_only=False).to(device) for filename in filenames]
 
     # compute fluxes (in units of nano maggies) given SPS parameters (theta) and normalization (N = -2.5log10M + dm(z))
     def fluxes(self, theta, N):
@@ -1389,7 +1389,7 @@ def train_photulator_stack(
                 activation=activation_functions[activation],
             ).to("cpu")
         best_state_cpu = torch.load(
-            save_location + "_state.pt", map_location=torch.device("cpu")
+            save_location + "_state.pt", map_location=torch.device("cpu"), weights_only=False
         )
         photulator_cpu.load_state_dict(best_state_cpu)
         torch.save(photulator_cpu, save_location + "_cpu.pt")
