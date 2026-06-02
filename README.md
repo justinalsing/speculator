@@ -20,3 +20,6 @@ A basic demo of loading and calling a pre-trained model (Prospector-alpha) can b
 ## Updates and Collaboration
 
 This `tensorflow` version of the code is no longer being actively maintained, but will remain here for those still using it. The `torch` version developed in the `torch` branch of [justinalsing/speculator](https://github.com/justinalsing/speculator) will continue to be developed as the default branch of [Cosmo-Pop/speculator](https://github.com/Cosmo-Pop/speculator).
+
+## References
+- J. Alsing et al. (2020). ApJS 249, 5. [arXiv:1911.11778](https://arxiv.org/abs/1911.11778)
